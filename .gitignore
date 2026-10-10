@@ -1,0 +1,14 @@
+# Окружение и служебные файлы
+.venv/
+venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+
+# База данных и секреты не попадают в репозиторий
+data/
+*.db
+*.sqlite
+*.sqlite3
+.env
+secrets.toml
