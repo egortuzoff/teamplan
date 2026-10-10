@@ -113,3 +113,69 @@ def test_transaction_rolls_back_on_database_error(conn):
             )
             raise sqlite3.OperationalError("disk I/O error")
     assert conn.execute("SELECT COUNT(*) FROM players").fetchone()[0] == 0
+
+
+def test_activity_has_attendance_and_reply_by(conn, org, p1, mk_event, now):
+    event_id = mk_event("activity", reply_by="2026-11-04 18:00")
+    event = events.get_event(conn, org, event_id)
+    assert event["type_label"] == "Мероприятие"
+    assert event["reply_by"] == "2026-11-04 18:00"
+    attendance.set_attendance(conn, p1, event_id, p1.player_id, "maybe", now=now)
+    summary = attendance.attendance_summary(conn, org, event_id, now=now)
+    assert summary["counts"]["maybe"] == 1
+
+
+@pytest.mark.parametrize("event_type", ["training", "game"])
+def test_gather_time_is_saved_for_training_and_game(conn, org, mk_event, event_type):
+    event_id = mk_event(event_type, gather_time=time(18, 30))
+    assert events.get_event(conn, org, event_id)["gather_time"] == "18:30"
+    assert events.list_events(conn, org)[0]["gather_time"] == "18:30"
+
+
+def test_gather_time_is_optional(conn, org, mk_event):
+    assert events.get_event(conn, org, mk_event())["gather_time"] is None
+
+
+def test_gather_time_equal_to_start_is_allowed(conn, org, mk_event):
+    event_id = mk_event(gather_time=time(19, 0))
+    assert events.get_event(conn, org, event_id)["gather_time"] == "19:00"
+
+
+def test_gather_time_after_start_is_rejected(conn, mk_event):
+    with pytest.raises(ServiceError, match="не может быть позже времени начала"):
+        mk_event("game", gather_time=time(19, 15))
+
+
+def test_gather_time_is_not_allowed_for_activity(conn, mk_event):
+    with pytest.raises(ServiceError, match="Для мероприятия время сбора не задаётся"):
+        mk_event("activity", gather_time=time(18, 0))
+
+
+def test_gather_time_wrong_format_is_rejected(conn, mk_event):
+    with pytest.raises(ServiceError, match="Время сбора"):
+        mk_event(gather_time="полседьмого")
+
+
+def test_update_gather_time_keeps_attendance_marks(conn, org, p1, mk_event, now):
+    event_id = mk_event(gather_time=time(18, 30))
+    attendance.set_attendance(conn, p1, event_id, p1.player_id, "yes", now=now)
+    day = now.date() + timedelta(days=3)
+    events.update_event(conn, org, event_id, "Т", day, time(19, 0), gather_time=time(18, 0), now=now)
+    assert events.get_event(conn, org, event_id)["gather_time"] == "18:00"
+    assert attendance.attendance_summary(conn, org, event_id, now=now)["counts"]["yes"] == 1
+    events.update_event(conn, org, event_id, "Т", day, time(19, 0), now=now)
+    assert events.get_event(conn, org, event_id)["gather_time"] is None
+
+
+def test_update_rejects_start_earlier_than_gather_time(conn, org, mk_event, now):
+    event_id = mk_event(gather_time=time(18, 30))
+    day = now.date() + timedelta(days=3)
+    with pytest.raises(ServiceError, match="не может быть позже времени начала"):
+        events.update_event(conn, org, event_id, "Т", day, time(18, 0), gather_time=time(18, 30), now=now)
+
+
+def test_update_rejects_gather_time_for_activity(conn, org, mk_event, now):
+    event_id = mk_event("activity")
+    day = now.date() + timedelta(days=3)
+    with pytest.raises(ServiceError, match="Для мероприятия"):
+        events.update_event(conn, org, event_id, "Т", day, time(19, 0), gather_time=time(18, 0), now=now)

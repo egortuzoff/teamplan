@@ -13,6 +13,25 @@ WRITE_ERROR = (
     "повторите действие."
 )
 
+# Таблица событий описана отдельно: по этому же описанию она пересоздаётся
+# при обновлении базы старого формата (_upgrade_events).
+EVENTS_TABLE = """
+CREATE TABLE IF NOT EXISTS {name} (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    type        TEXT NOT NULL CHECK (type IN ('training', 'game', 'activity')),
+    title       TEXT NOT NULL,
+    date        TEXT NOT NULL,
+    time        TEXT NOT NULL,
+    gather_time TEXT,
+    place       TEXT,
+    status      TEXT NOT NULL DEFAULT 'planned'
+                CHECK (status IN ('planned', 'cancelled')),
+    reply_by    TEXT,
+    created_at  TEXT NOT NULL,
+    updated_at  TEXT NOT NULL
+);
+"""
+
 # Схема рассчитана на этап 2: таблицы результатов, голов и уведомлений
 # добавляются отдельными таблицами без переделки существующих.
 SCHEMA = """
@@ -36,19 +55,7 @@ CREATE TABLE IF NOT EXISTS users (
     CHECK (role = 'organizer' OR player_id IS NOT NULL)
 );
 
-CREATE TABLE IF NOT EXISTS events (
-    id          INTEGER PRIMARY KEY AUTOINCREMENT,
-    type        TEXT NOT NULL CHECK (type IN ('training', 'camp', 'game')),
-    title       TEXT NOT NULL,
-    date        TEXT NOT NULL,
-    time        TEXT NOT NULL,
-    place       TEXT,
-    status      TEXT NOT NULL DEFAULT 'planned'
-                CHECK (status IN ('planned', 'cancelled')),
-    reply_by    TEXT,
-    created_at  TEXT NOT NULL,
-    updated_at  TEXT NOT NULL
-);
+{events_table}
 
 CREATE TABLE IF NOT EXISTS attendance (
     event_id    INTEGER NOT NULL REFERENCES events(id) ON DELETE CASCADE,
@@ -70,7 +77,7 @@ CREATE TABLE IF NOT EXISTS squad_players (
     player_id   INTEGER NOT NULL REFERENCES players(id) ON DELETE RESTRICT,
     PRIMARY KEY (event_id, player_id)
 );
-"""
+""".replace("{events_table}", EVENTS_TABLE.format(name="events").strip())
 
 
 def get_db_path():
@@ -88,9 +95,42 @@ def connect(path=None):
     # isolation_level=None: транзакциями управляем вручную (см. transaction).
     conn = sqlite3.connect(path, isolation_level=None)
     conn.row_factory = sqlite3.Row
-    conn.execute("PRAGMA foreign_keys = ON")
     conn.executescript(SCHEMA)
+    _upgrade_events(conn)
+    conn.execute("PRAGMA foreign_keys = ON")
     return conn
+
+
+def _upgrade_events(conn):
+    """Обновляет таблицу событий из формата ТЗ 0.1 без потери данных.
+
+    В старом формате тип «сбор» (camp) и нет поля «время сбора». Ограничение
+    CHECK в SQLite не изменить, поэтому таблица пересоздаётся: данные
+    копируются, события camp становятся activity (мероприятие). Вызывается
+    до включения внешних ключей, чтобы удаление старой таблицы не удалило
+    отметки явки и составы.
+    """
+    columns = {row["name"] for row in conn.execute("PRAGMA table_info(events)")}
+    if "gather_time" in columns:
+        return
+    conn.execute("BEGIN")
+    try:
+        conn.execute(EVENTS_TABLE.format(name="events_new"))
+        conn.execute(
+            "INSERT INTO events_new (id, type, title, date, time, gather_time, place, "
+            "status, reply_by, created_at, updated_at) "
+            "SELECT id, CASE type WHEN 'camp' THEN 'activity' ELSE type END, title, "
+            "date, time, NULL, place, status, reply_by, created_at, updated_at "
+            "FROM events"
+        )
+        conn.execute("DROP TABLE events")
+        conn.execute("ALTER TABLE events_new RENAME TO events")
+        if conn.execute("PRAGMA foreign_key_check").fetchone():
+            raise sqlite3.IntegrityError("foreign key check failed")
+    except BaseException:
+        conn.rollback()
+        raise
+    conn.commit()
 
 
 @contextmanager

@@ -1,4 +1,4 @@
-"""TeamPlan: учёт расписания, явки и составов команды (этап 1).
+"""TeamPlan: учёт расписания, явки и составов команды (этап 1, ТЗ TP-TZ-001 версии 0.2).
 
 Запуск: streamlit run app.py
 Вся логика и проверка прав находятся в пакете teamplan; здесь только экраны.
@@ -118,6 +118,7 @@ def show_schedule(conn, actor):
             {
                 "Дата": format_date(e["date"]),
                 "Время": e["time"],
+                "Время сбора": e["gather_time"] or "",
                 "Тип": e["type_label"],
                 "Название": e["title"],
                 "Место": e["place"] or "",
@@ -146,6 +147,8 @@ def show_event_card(conn, actor, ev):
     st.divider()
     st.subheader(ev["title"])
     line = f"{ev['type_label']} · {format_date(ev['date'])} в {ev['time']}"
+    if ev["gather_time"]:
+        line += f" · сбор в {ev['gather_time']}"
     if ev["place"]:
         line += f" · {ev['place']}"
     st.write(line)
@@ -284,7 +287,7 @@ def show_squad(conn, actor, ev):
 def reply_by_inputs(prefix, default_value, default_date):
     """Поля «ответить до»: флажок, дата и время. Возвращает строку или None."""
     use = st.checkbox(
-        "Указать срок «ответить до» (для тренировки и сбора)",
+        "Указать срок «ответить до»",
         value=default_value is not None, key=f"{prefix}_use",
     )
     if default_value:
@@ -299,6 +302,18 @@ def reply_by_inputs(prefix, default_value, default_date):
     return datetime.combine(reply_date, reply_time).strftime(DATETIME_FMT)
 
 
+def gather_time_inputs(prefix, default_value):
+    """Поле «время сбора» (FR-41): флажок и время. Возвращает время или None."""
+    use = st.checkbox(
+        "Указать время сбора", value=default_value is not None, key=f"{prefix}_use",
+    )
+    value = st.time_input(
+        "Время сбора", value=to_time(default_value) if default_value else time(18, 30),
+        key=f"{prefix}_time",
+    )
+    return value if use else None
+
+
 def show_event_admin(conn, actor, ev):
     with st.expander("Управление событием"):
         if ev["status"] == "planned":
@@ -310,11 +325,15 @@ def show_event_admin(conn, actor, ev):
                 reply_by = None
                 if ev["type"] != "game":
                     reply_by = reply_by_inputs(f"e_reply_{ev['id']}", ev["reply_by"], to_date(ev["date"]))
+                gather_time = None
+                if ev["type"] in events.GATHER_TYPES:
+                    gather_time = gather_time_inputs(f"e_gather_{ev['id']}", ev["gather_time"])
                 submitted = st.form_submit_button("Сохранить изменения")
             if submitted:
                 perform(
                     lambda: events.update_event(
-                        conn, actor, ev["id"], title, date_value, time_value, place, reply_by
+                        conn, actor, ev["id"], title, date_value, time_value, place, reply_by,
+                        gather_time=gather_time,
                     ),
                     "Изменения сохранены. Отметки явки сохранены.",
                 )
@@ -339,21 +358,28 @@ def show_new_event(conn, actor):
     st.header("Новое событие")
     ver = st.session_state.setdefault("new_event_ver", 0)
     today = datetime.now().date()
+    # Тип выбирается вне формы, чтобы набор полей сразу менялся под тип события.
+    event_type = st.selectbox(
+        "Тип", TYPE_OPTIONS, format_func=lambda k: events.EVENT_TYPES[k],
+        key=f"ne_type_{ver}",
+    )
     with st.form(f"new_event_form_{ver}"):
-        event_type = st.selectbox(
-            "Тип", TYPE_OPTIONS, format_func=lambda k: events.EVENT_TYPES[k],
-            key=f"ne_type_{ver}",
-        )
         title = st.text_input("Название", key=f"ne_title_{ver}")
         date_value = st.date_input("Дата", value=today, min_value=today, key=f"ne_date_{ver}")
         time_value = st.time_input("Время", value=time(19, 0), key=f"ne_time_{ver}")
         place = st.text_input("Место (необязательно)", key=f"ne_place_{ver}")
-        reply_by = reply_by_inputs(f"ne_reply_{ver}", None, today)
+        reply_by = None
+        if event_type != "game":
+            reply_by = reply_by_inputs(f"ne_reply_{ver}", None, today)
+        gather_time = None
+        if event_type in events.GATHER_TYPES:
+            gather_time = gather_time_inputs(f"ne_gather_{ver}", None)
         submitted = st.form_submit_button("Создать событие")
     if submitted:
         try:
             new_id = events.create_event(
-                conn, actor, event_type, title, date_value, time_value, place, reply_by
+                conn, actor, event_type, title, date_value, time_value, place, reply_by,
+                gather_time=gather_time,
             )
         except ServiceError as exc:
             st.error(str(exc))
