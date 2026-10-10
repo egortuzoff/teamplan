@@ -1,0 +1,22 @@
+# В образ попадает только код приложения
+.git/
+.gitignore
+.dockerignore
+Dockerfile
+docker-compose.yml
+.venv/
+venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+tests/
+pytest.ini
+docs/
+
+# База данных и секреты в образ не попадают
+data/
+*.db
+*.sqlite
+*.sqlite3
+.env
+secrets.toml
