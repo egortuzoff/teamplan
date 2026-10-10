@@ -1,5 +1,5 @@
 """Состав на игру: черновик и публикация (FR-23 – FR-26)."""
-from . import auth
+from . import auth, notifications
 from .common import stamp
 from .db import transaction
 from .errors import ServiceError
@@ -64,13 +64,43 @@ def _normalize_ids(conn, player_ids):
     return ids
 
 
+def _check_scorers_stay(conn, event_id, ids):
+    """Игрока с голом или передачей в этой игре нельзя убрать из состава (FR-29)."""
+    rows = conn.execute(
+        "SELECT DISTINCT p.id, p.name FROM goals g JOIN players p "
+        "ON p.id = g.scorer_id OR p.id = g.assist_id WHERE g.event_id = ?",
+        (event_id,),
+    ).fetchall()
+    removed = sorted(r["name"] for r in rows if r["id"] not in ids)
+    if removed:
+        raise ServiceError(
+            "Нельзя убрать из состава игроков с голом или передачей в этой игре: "
+            + ", ".join(removed) + ". Сначала исправьте результат."
+        )
+
+
+def _notify_squad_changed(conn, actor, row, old_ids, new_ids, now):
+    """Уведомление игрокам прежнего и нового состава (FR-38)."""
+    game = notifications.describe_event(row)
+
+    def text(player_id):
+        if player_id not in old_ids:
+            return f"Изменён состав на игру {game}: вы включены в состав."
+        if player_id not in new_ids:
+            return f"Изменён состав на игру {game}: вы больше не в составе."
+        return f"Изменён состав на игру {game}. Вы по-прежнему в составе."
+
+    notifications.notify(
+        conn, actor, list(old_ids) + list(new_ids), row["id"], "squad_changed", text, now
+    )
+
+
 def save_squad(conn, actor, event_id, player_ids, now=None):
     """Сохраняет состав из списка всех игроков (FR-23).
 
     Новый состав сохраняется как черновик. Если состав уже опубликован,
-    изменение вступает в силу сразу (FR-26).
-    TODO этап 2: при изменении опубликованного состава создавать уведомления
-    игрокам прежнего и нового состава.
+    изменение вступает в силу сразу (FR-26), а уведомление получают игроки
+    прежнего и нового состава (FR-38).
     """
     auth.require_organizer(conn, actor)
     row = _get_game(conn, event_id)
@@ -80,6 +110,8 @@ def save_squad(conn, actor, event_id, player_ids, now=None):
     state = _squad_state(conn, event_id)
     if state == "published" and not ids:
         raise ServiceError("Опубликованный состав не может быть пустым.")
+    old_ids = notifications.squad_player_ids(conn, event_id)
+    _check_scorers_stay(conn, event_id, ids)
     with transaction(conn):
         ts = stamp(now)
         if state == "none":
@@ -97,12 +129,14 @@ def save_squad(conn, actor, event_id, player_ids, now=None):
             "INSERT INTO squad_players (event_id, player_id) VALUES (?, ?)",
             [(event_id, player_id) for player_id in ids],
         )
+        if state == "published" and set(ids) != set(old_ids):
+            _notify_squad_changed(conn, actor, row, old_ids, ids, now)
 
 
 def publish_squad(conn, actor, event_id, now=None):
     """Публикует состав: после этого его видят игроки (FR-24).
 
-    TODO этап 2: создавать уведомление игрокам из состава.
+    Игроки из состава получают уведомление (п. 4.5).
     """
     auth.require_organizer(conn, actor)
     row = _get_game(conn, event_id)
@@ -119,4 +153,10 @@ def publish_squad(conn, actor, event_id, now=None):
         conn.execute(
             "UPDATE squads SET state = 'published', updated_at = ? WHERE event_id = ?",
             (stamp(now), event_id),
+        )
+        notifications.notify(
+            conn, actor, notifications.squad_player_ids(conn, event_id), event_id,
+            "squad_published",
+            f"Опубликован состав на игру {notifications.describe_event(row)}. Вы в составе.",
+            now,
         )

@@ -10,6 +10,9 @@ services:
       - "127.0.0.1:8501:8501"
     environment:
       TEAMPLAN_DB: /data/teamplan.db
+      # Часовой пояс команды: от него зависят проверки «событие началось»
+      # и «срок в прошлом». По умолчанию Москва, можно задать переменной TZ.
+      TZ: ${TZ:-Europe/Moscow}
     volumes:
       - teamplan-data:/data
     restart: unless-stopped

@@ -59,3 +59,28 @@ def mk_event(conn, org, now):
         )
 
     return make
+
+
+@pytest.fixture
+def played_game(conn, org, p1, p2, now):
+    """Игра, которая уже прошла (2 дня назад), с опубликованным составом из p1 и p2.
+
+    Создаётся с «текущим временем» за неделю до now, как в seed.py.
+    """
+    from teamplan import squads
+
+    week_ago = now - timedelta(days=7)
+    game = events.create_event(
+        conn, org, "game", "Прошедшая игра", now.date() - timedelta(days=2), time(19, 0),
+        now=week_ago,
+    )
+    squads.save_squad(conn, org, game, [p1.player_id, p2.player_id], now=week_ago)
+    squads.publish_squad(conn, org, game, now=week_ago)
+    return game
+
+
+def notes(conn, actor):
+    """Тексты уведомлений пользователя, новые сверху."""
+    from teamplan import notifications
+
+    return [n["text"] for n in notifications.list_notifications(conn, actor)]

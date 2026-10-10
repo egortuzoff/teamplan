@@ -1,15 +1,15 @@
-"""События: тренировки, игры и мероприятия (FR-9 – FR-15, FR-41)."""
-from . import auth
+"""События: тренировки, игры и мероприятия (FR-9 – FR-15, FR-41, FR-42)."""
+from datetime import datetime
+
+from . import auth, notifications
 from .common import (
-    clean_text, current_time, event_start, norm_date, norm_optional_datetime,
-    norm_time, stamp,
+    DATETIME_FMT, clean_text, current_time, event_start, format_date, norm_date,
+    norm_optional_datetime, norm_time, stamp,
 )
 from .db import transaction
 from .errors import ServiceError
 
 EVENT_TYPES = {"training": "Тренировка", "game": "Игра", "activity": "Мероприятие"}
-# Типы, для которых доступно время сбора (FR-41).
-GATHER_TYPES = ("training", "game")
 STATUS_LABELS = {"planned": "Запланировано", "cancelled": "Отменено"}
 
 
@@ -33,19 +33,30 @@ def is_started(event, now=None):
     return event_start(event["date"], event["time"]) <= current_time(now)
 
 
-def _check_reply_by(event_type, reply_by):
+def _check_reply_by(event_type, reply_by, date, time, now=None, previous=None):
+    """Срок «ответить до» (FR-42).
+
+    Новый или изменённый срок не может быть в прошлом. Если срок не менялся
+    (previous), правка других полей после его наступления не блокируется.
+    Срок в любом случае не может быть позже начала события.
+    """
     reply_by = norm_optional_datetime(reply_by, "Ответить до")
-    if reply_by and event_type == "game":
+    if reply_by is None:
+        return None
+    if event_type == "game":
         raise ServiceError("Для игры срок ответа не задаётся: на игры явка не отмечается.")
+    moment = datetime.strptime(reply_by, DATETIME_FMT)
+    if reply_by != previous and moment < current_time(now).replace(second=0, microsecond=0):
+        raise ServiceError("Срок «ответить до» не может быть в прошлом.")
+    if moment > event_start(date, time):
+        raise ServiceError("Срок «ответить до» не может быть позже начала события.")
     return reply_by
 
 
-def _check_gather_time(event_type, gather_time, start_time):
-    """Время сбора (FR-41): только для тренировки и игры, не позже начала."""
+def _check_gather_time(gather_time, start_time):
+    """Время сбора (FR-41): для событий любого типа, не позже начала."""
     if gather_time is None or gather_time == "":
         return None
-    if event_type not in GATHER_TYPES:
-        raise ServiceError("Для мероприятия время сбора не задаётся.")
     gather_time = norm_time(gather_time, "Время сбора")
     if gather_time > start_time:
         raise ServiceError("Время сбора не может быть позже времени начала события.")
@@ -62,10 +73,10 @@ def create_event(conn, actor, event_type, title, date, time, place=None,
     date = norm_date(date, "Дата")
     time = norm_time(time, "Время")
     place = clean_text(place, "Место", 120, required=False)
-    reply_by = _check_reply_by(event_type, reply_by)
-    gather_time = _check_gather_time(event_type, gather_time, time)
     if date < current_time(now).strftime("%Y-%m-%d"):
         raise ServiceError("Дата события не может быть в прошлом.")
+    gather_time = _check_gather_time(gather_time, time)
+    reply_by = _check_reply_by(event_type, reply_by, date, time, now)
     with transaction(conn):
         ts = stamp(now)
         return conn.execute(
@@ -76,13 +87,28 @@ def create_event(conn, actor, event_type, title, date, time, place=None,
         ).lastrowid
 
 
+def _move_text(row, date, time, gather_time, place):
+    """Текст уведомления о переносе: что было и что стало."""
+    changes = []
+    if date != row["date"]:
+        changes.append(f"дата {format_date(row['date'])} → {format_date(date)}")
+    if time != row["time"]:
+        changes.append(f"время {row['time']} → {time}")
+    if gather_time != row["gather_time"]:
+        changes.append(
+            f"время сбора {row['gather_time'] or 'не указано'} → {gather_time or 'не указано'}"
+        )
+    if place != row["place"]:
+        changes.append(f"место {row['place'] or 'не указано'} → {place or 'не указано'}")
+    return f"Перенос: {notifications.describe_event(row)}. Изменено: " + "; ".join(changes) + "."
+
+
 def update_event(conn, actor, event_id, title, date, time, place=None,
                  reply_by=None, now=None, gather_time=None):
     """Организатор меняет поля события (FR-11). Тип события не меняется.
 
-    Отметки явки при этом сохраняются.
-    TODO этап 2: создавать уведомление о переносе при изменении даты, времени,
-    времени сбора или места (п. 4.5): сравнить новые значения со старыми в row.
+    Отметки явки при этом сохраняются. При изменении даты, времени, времени
+    сбора или места игроки получают уведомление о переносе (п. 4.5).
     """
     auth.require_organizer(conn, actor)
     row = _get_event_row(conn, event_id)
@@ -92,22 +118,30 @@ def update_event(conn, actor, event_id, title, date, time, place=None,
     date = norm_date(date, "Дата")
     time = norm_time(time, "Время")
     place = clean_text(place, "Место", 120, required=False)
-    reply_by = _check_reply_by(row["type"], reply_by)
-    gather_time = _check_gather_time(row["type"], gather_time, time)
     if date != row["date"] and date < current_time(now).strftime("%Y-%m-%d"):
         raise ServiceError("Дата события не может быть в прошлом.")
+    gather_time = _check_gather_time(gather_time, time)
+    reply_by = _check_reply_by(row["type"], reply_by, date, time, now, previous=row["reply_by"])
+    moved = (date, time, gather_time, place) != (
+        row["date"], row["time"], row["gather_time"], row["place"]
+    )
     with transaction(conn):
         conn.execute(
             "UPDATE events SET title = ?, date = ?, time = ?, gather_time = ?, "
             "place = ?, reply_by = ?, updated_at = ? WHERE id = ?",
             (title, date, time, gather_time, place, reply_by, stamp(now), event_id),
         )
+        if moved:
+            notifications.notify(
+                conn, actor, notifications.event_audience(conn, row), event_id, "moved",
+                _move_text(row, date, time, gather_time, place), now,
+            )
 
 
 def cancel_event(conn, actor, event_id, now=None):
     """Отмена: событие остаётся в списке со статусом «Отменено» (FR-12).
 
-    TODO этап 2: создавать уведомление игрокам об отмене.
+    Игроки получают уведомление об отмене (п. 4.5).
     """
     auth.require_organizer(conn, actor)
     row = _get_event_row(conn, event_id)
@@ -120,24 +154,31 @@ def cancel_event(conn, actor, event_id, now=None):
             "UPDATE events SET status = 'cancelled', updated_at = ? WHERE id = ?",
             (stamp(now), event_id),
         )
+        notifications.notify(
+            conn, actor, notifications.event_audience(conn, row), event_id, "cancelled",
+            f"Отменено: {notifications.describe_event(row)}.", now,
+        )
 
 
-def _has_result(conn, event_id):
-    """TODO этап 2: True, если у игры есть счёт или голы (FR-14)."""
-    return False
+def has_result(conn, event_id):
+    """True, если у игры внесён счёт или голы (FR-14)."""
+    return conn.execute(
+        "SELECT 1 FROM results WHERE event_id = ?", (event_id,)
+    ).fetchone() is not None
 
 
 def delete_event(conn, actor, event_id):
-    """Удаление события без результата (FR-13).
+    """Удаление события без результата (FR-13, FR-14).
 
-    Отметки явки и состав удаляются вместе с событием, уведомления не создаются.
+    Отметки явки, состав и связанные уведомления удаляются вместе с событием,
+    новые уведомления не создаются.
     """
     auth.require_organizer(conn, actor)
     _get_event_row(conn, event_id)
-    if _has_result(conn, event_id):
+    if has_result(conn, event_id):
         raise ServiceError(
             "Игру с внесённым результатом удалить нельзя. "
-            "Ошибки исправляются редактированием."
+            "Ошибки исправляются редактированием результата."
         )
     with transaction(conn):
         conn.execute("DELETE FROM events WHERE id = ?", (event_id,))
