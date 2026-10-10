@@ -1,0 +1,17 @@
+# Запуск: docker compose up --build
+# Остановка: Ctrl+C или docker compose down
+# Чистая база: docker compose down -v
+services:
+  teamplan:
+    build: .
+    image: teamplan
+    ports:
+      - "8501:8501"
+    environment:
+      TEAMPLAN_DB: /data/teamplan.db
+    volumes:
+      - teamplan-data:/data
+    restart: unless-stopped
+
+volumes:
+  teamplan-data:
