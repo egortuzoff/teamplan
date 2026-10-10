@@ -1,4 +1,4 @@
-"""TeamPlan: учёт расписания, явки и составов команды (этап 1, ТЗ TP-TZ-001 версии 0.2).
+"""TeamPlan: расписание, явка, составы и результаты команды (этап 2, ТЗ TP-TZ-001 версии 0.3).
 
 Запуск: streamlit run app.py
 Вся логика и проверка прав находятся в пакете teamplan; здесь только экраны.
@@ -8,7 +8,7 @@ from datetime import datetime, time
 
 import streamlit as st
 
-from teamplan import attendance, auth, events, players, squads
+from teamplan import attendance, auth, events, notifications, players, results, squads
 from teamplan.common import DATE_FMT, DATETIME_FMT, TIME_FMT, format_date, format_datetime
 from teamplan.db import connect
 from teamplan.errors import ServiceError
@@ -16,6 +16,8 @@ from teamplan.errors import ServiceError
 logger = logging.getLogger("teamplan")
 
 PAGE_SCHEDULE = "Расписание"
+PAGE_STATS = "Статистика"
+PAGE_NOTIFICATIONS = "Уведомления"
 PAGE_NEW_EVENT = "Новое событие"
 PAGE_PLAYERS = "Игроки"
 
@@ -35,6 +37,8 @@ def show_flash():
         kind, text = item
         if kind == "success":
             st.success(text)
+        elif kind == "warning":
+            st.warning(text)
         else:
             st.error(text)
 
@@ -83,21 +87,26 @@ def show_login(conn):
             st.error(str(exc))
             return
         st.session_state["actor"] = actor
+        st.session_state["just_logged_in"] = True
         st.rerun()
 
 
-def show_sidebar(actor):
+def show_sidebar(conn, actor):
     st.sidebar.markdown(f"**{actor.name}**")
     st.sidebar.caption(auth.ROLE_LABELS[actor.role])
-    pages = [PAGE_SCHEDULE]
+    pages = [PAGE_SCHEDULE, PAGE_STATS, PAGE_NOTIFICATIONS]
     if actor.is_organizer:
         pages += [PAGE_NEW_EVENT, PAGE_PLAYERS]
+    unread = notifications.unread_count(conn, actor)
     # Переход на другую страницу из кода: значение задаём до создания переключателя.
     if "goto_page" in st.session_state:
         st.session_state["page"] = st.session_state.pop("goto_page")
     if st.session_state.get("page") not in pages:
         st.session_state["page"] = pages[0]
-    page = st.sidebar.radio("Раздел", pages, key="page")
+    page = st.sidebar.radio(
+        "Раздел", pages, key="page",
+        format_func=lambda p: f"{p} ({unread})" if p == PAGE_NOTIFICATIONS and unread else p,
+    )
     if st.sidebar.button("Выйти"):
         st.session_state.clear()
         st.rerun()
@@ -156,6 +165,7 @@ def show_event_card(conn, actor, ev):
         st.warning("Событие отменено.")
     if ev["type"] == "game":
         show_squad(conn, actor, ev)
+        show_result(conn, actor, ev)
     else:
         show_attendance(conn, actor, ev)
     if actor.is_organizer:
@@ -284,6 +294,88 @@ def show_squad(conn, actor, ev):
         perform(save_and_publish, "Состав опубликован.")
 
 
+def show_result(conn, actor, ev):
+    """Результат игры: счёт, голы и передачи (FR-27 – FR-31)."""
+    st.markdown("#### Результат")
+    result = results.get_result(conn, actor, ev["id"])
+    if result:
+        st.write(f"**Счёт: {result['our_score']}:{result['their_score']}** (наша команда : соперник)")
+        if result["goals"]:
+            lines = []
+            for i, g in enumerate(result["goals"], start=1):
+                line = f"{i}. {g['scorer_name']}"
+                if g["assist_name"]:
+                    line += f" (передача: {g['assist_name']})"
+                lines.append(line)
+            st.markdown("Голы:  \n" + "  \n".join(lines))
+        else:
+            st.caption("Голы не указаны.")
+        if actor.is_organizer and result["warning"]:
+            st.warning(result["warning"])
+    else:
+        st.caption("Результат не внесён.")
+
+    if not actor.is_organizer or ev["status"] == "cancelled":
+        return
+    if not events.is_started(ev):
+        st.caption("Результат можно внести после начала игры.")
+        return
+    squad = squads.get_squad(conn, actor, ev["id"])
+    if squad["state"] != "published":
+        st.caption("Результат вносится для игры с опубликованным составом.")
+        return
+    by_id = {p["id"]: p for p in squad["players"]}
+    old_goals = result["goals"] if result else []
+    with st.expander("Изменить результат" if result else "Внести результат", expanded=not result):
+        rows = st.number_input(
+            "Число голов в списке", min_value=0, max_value=results.MAX_SCORE,
+            value=len(old_goals), step=1, key=f"res_rows_{ev['id']}",
+        )
+        with st.form(f"result_form_{ev['id']}"):
+            cols = st.columns(2)
+            our = cols[0].number_input(
+                "Счёт нашей команды", min_value=0, max_value=results.MAX_SCORE, step=1,
+                value=result["our_score"] if result else 0, key=f"res_our_{ev['id']}",
+            )
+            their = cols[1].number_input(
+                "Счёт соперника", min_value=0, max_value=results.MAX_SCORE, step=1,
+                value=result["their_score"] if result else 0, key=f"res_their_{ev['id']}",
+            )
+            goals = []
+            scorer_ids = list(by_id)
+            assist_ids = [None] + scorer_ids
+            for i in range(int(rows)):
+                old = old_goals[i] if i < len(old_goals) else None
+                cols = st.columns(2)
+                scorer = cols[0].selectbox(
+                    f"Гол {i + 1}: автор", scorer_ids,
+                    index=scorer_ids.index(old["scorer_id"])
+                    if old and old["scorer_id"] in by_id else None,
+                    format_func=lambda pid: player_label(by_id[pid]),
+                    placeholder="Выберите автора", key=f"goal_scorer_{ev['id']}_{i}",
+                )
+                assist = cols[1].selectbox(
+                    f"Гол {i + 1}: передача", assist_ids,
+                    index=assist_ids.index(old["assist_id"])
+                    if old and old["assist_id"] in assist_ids else 0,
+                    format_func=lambda pid: "без передачи" if pid is None else player_label(by_id[pid]),
+                    key=f"goal_assist_{ev['id']}_{i}",
+                )
+                goals.append((scorer, assist))
+            submitted = st.form_submit_button("Сохранить результат")
+    if submitted:
+        try:
+            warning = results.save_result(conn, actor, ev["id"], int(our), int(their), goals)
+        except ServiceError as exc:
+            st.error(str(exc))
+            return
+        if warning:
+            flash("warning", warning)
+        else:
+            flash("success", "Результат сохранён.")
+        st.rerun()
+
+
 def reply_by_inputs(prefix, default_value, default_date):
     """Поля «ответить до»: флажок, дата и время. Возвращает строку или None."""
     use = st.checkbox(
@@ -325,9 +417,7 @@ def show_event_admin(conn, actor, ev):
                 reply_by = None
                 if ev["type"] != "game":
                     reply_by = reply_by_inputs(f"e_reply_{ev['id']}", ev["reply_by"], to_date(ev["date"]))
-                gather_time = None
-                if ev["type"] in events.GATHER_TYPES:
-                    gather_time = gather_time_inputs(f"e_gather_{ev['id']}", ev["gather_time"])
+                gather_time = gather_time_inputs(f"e_gather_{ev['id']}", ev["gather_time"])
                 submitted = st.form_submit_button("Сохранить изменения")
             if submitted:
                 perform(
@@ -349,7 +439,65 @@ def show_event_admin(conn, actor, ev):
         ok = st.checkbox("Подтверждаю удаление события", key=f"delete_ok_{ev['id']}")
         if st.button("Удалить событие", disabled=not ok, key=f"delete_{ev['id']}"):
             perform(lambda: events.delete_event(conn, actor, ev["id"]), "Событие удалено.")
-        st.caption("Удаление убирает событие, отметки явки и состав без уведомлений.")
+        st.caption(
+            "Удаление убирает событие, отметки явки, состав и связанные уведомления, "
+            "новых уведомлений не создаёт. Игру с результатом удалить нельзя."
+        )
+
+
+# ---------- статистика и уведомления ----------
+
+def show_stats(conn, actor):
+    """Статистика игроков за всё время (FR-32, FR-33)."""
+    st.header("Статистика")
+    rows = results.player_stats(conn, actor)
+    if not rows:
+        st.info("Статистики пока нет: ни у одной игры не внесён счёт.")
+        return
+    st.dataframe(
+        [
+            {"Игрок": player_label(r), "Игры": r["games"], "Голы": r["goals"],
+             "Передачи": r["assists"]}
+            for r in rows
+        ],
+        hide_index=True,
+    )
+    st.caption("«Игры» — игры с внесённым счётом, в составе которых был игрок.")
+
+
+def show_notifications(conn, actor):
+    """Лента уведомлений пользователя (FR-36 – FR-40)."""
+    st.header("Уведомления")
+    items = notifications.list_notifications(conn, actor)
+    if not items:
+        st.info("Уведомлений нет.")
+        return
+    unread = notifications.unread_count(conn, actor)
+    st.write(f"Непрочитанных: **{unread}**")
+    if st.button("Отметить все прочитанными", disabled=unread == 0):
+        perform(lambda: notifications.mark_all_read(conn, actor), "Все уведомления прочитаны.")
+    st.caption(f"Показаны последние {notifications.FEED_LIMIT} уведомлений, новые сверху.")
+    for n in items:
+        when = datetime.strptime(n["created_at"], "%Y-%m-%d %H:%M:%S").strftime("%d.%m.%Y %H:%M")
+        with st.container(border=True):
+            cols = st.columns([5, 1])
+            if n["is_read"]:
+                cols[0].caption(f"{n['kind_label']} · {when} · прочитано")
+                cols[0].write(n["text"])
+                label = "Открыть"
+            else:
+                cols[0].markdown(f":blue[**● Новое**] · **{n['kind_label']}** · {when}")
+                cols[0].markdown(f"**{n['text']}**")
+                label = "Открыть и прочитать"
+            if cols[1].button(label, key=f"notif_{n['id']}"):
+                try:
+                    notifications.mark_read(conn, actor, n["id"])
+                except ServiceError as exc:
+                    st.error(str(exc))
+                else:
+                    st.session_state["goto_page"] = PAGE_SCHEDULE
+                    st.session_state["goto_event"] = n["event_id"]
+                    st.rerun()
 
 
 # ---------- новое событие ----------
@@ -371,9 +519,7 @@ def show_new_event(conn, actor):
         reply_by = None
         if event_type != "game":
             reply_by = reply_by_inputs(f"ne_reply_{ver}", None, today)
-        gather_time = None
-        if event_type in events.GATHER_TYPES:
-            gather_time = gather_time_inputs(f"ne_gather_{ver}", None)
+        gather_time = gather_time_inputs(f"ne_gather_{ver}", None)
         submitted = st.form_submit_button("Создать событие")
     if submitted:
         try:
@@ -473,7 +619,7 @@ def show_players(conn, actor):
     ok = st.checkbox("Подтверждаю удаление игрока", key=f"del_player_ok_{pid}")
     if st.button("Удалить игрока", disabled=not ok, key=f"del_player_{pid}"):
         perform(lambda: players.delete_player(conn, actor, pid), "Игрок удалён.")
-    st.caption("Игрока, включённого в состав на игру, удалить нельзя.")
+    st.caption("Игрока, включённого в состав на игру или с голом или передачей, удалить нельзя.")
 
 
 # ---------- точка входа ----------
@@ -495,8 +641,19 @@ def main():
             show_login(conn)
             return
         st.session_state["actor"] = actor
-        page = show_sidebar(actor)
-        if page == PAGE_NEW_EVENT and actor.is_organizer:
+        page = show_sidebar(conn, actor)
+        if st.session_state.pop("just_logged_in", False):
+            # FR-39: число непрочитанных уведомлений сразу после входа.
+            unread = notifications.unread_count(conn, actor)
+            if unread:
+                st.info(f"Непрочитанных уведомлений: {unread}. Откройте раздел «Уведомления».")
+            else:
+                st.info("Новых уведомлений нет.")
+        if page == PAGE_STATS:
+            show_stats(conn, actor)
+        elif page == PAGE_NOTIFICATIONS:
+            show_notifications(conn, actor)
+        elif page == PAGE_NEW_EVENT and actor.is_organizer:
             show_new_event(conn, actor)
         elif page == PAGE_PLAYERS and actor.is_organizer:
             show_players(conn, actor)

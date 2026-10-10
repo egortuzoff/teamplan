@@ -85,11 +85,17 @@ def set_player_password(conn, actor, player_id, new_password, now=None):
 def delete_player(conn, actor, player_id):
     """Удаляет игрока и его аккаунт (FR-8).
 
-    Нельзя удалить игрока, включённого в состав.
-    TODO этап 2: так же запретить удаление, если у игрока есть голы или передачи.
+    Нельзя удалить игрока, у которого есть гол, передача или включение в состав.
     """
     auth.require_organizer(conn, actor)
     _get_player(conn, player_id)
+    has_goals = conn.execute(
+        "SELECT 1 FROM goals WHERE scorer_id = ? OR assist_id = ?", (player_id, player_id)
+    ).fetchone()
+    if has_goals:
+        raise ServiceError(
+            "Игрока нельзя удалить: у него есть гол или передача в результатах игр."
+        )
     in_squad = conn.execute(
         "SELECT 1 FROM squad_players WHERE player_id = ?", (player_id,)
     ).fetchone()

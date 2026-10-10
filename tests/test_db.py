@@ -112,3 +112,79 @@ def test_upgraded_database_keeps_constraints(old_db):
             assert conn.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0] == 0
     finally:
         conn.close()
+
+
+# ---------- обновление базы этапа 1 (ТЗ 0.2) до этапа 2 ----------
+
+# Таблицы в том виде, в каком их создавала версия этапа 1 (ТЗ 0.2):
+# без результатов, голов и уведомлений.
+STAGE1_SCHEMA = OLD_SCHEMA.replace(
+    "type TEXT NOT NULL CHECK (type IN ('training', 'camp', 'game')),\n"
+    "    title TEXT NOT NULL, date TEXT NOT NULL, time TEXT NOT NULL, place TEXT,",
+    "type TEXT NOT NULL CHECK (type IN ('training', 'game', 'activity')),\n"
+    "    title TEXT NOT NULL, date TEXT NOT NULL, time TEXT NOT NULL, gather_time TEXT,\n"
+    "    place TEXT,",
+)
+
+
+@pytest.fixture
+def stage1_db(tmp_path):
+    """База этапа 1: игрок, организатор, тренировка с отметкой и прошедшая игра с составом."""
+    path = str(tmp_path / "stage1.db")
+    old = sqlite3.connect(path)
+    old.executescript(STAGE1_SCHEMA)
+    old.execute("INSERT INTO players VALUES (1, 'Игрок Первый', 10, NULL, ?, ?)", (TS, TS))
+    old.execute(
+        "INSERT INTO users VALUES (1, 'igrok1', ?, 'player', 1, ?, ?)",
+        (auth.hash_password("pass-igrok1"), TS, TS),
+    )
+    old.execute(
+        "INSERT INTO users VALUES (2, 'trener', ?, 'organizer', NULL, ?, ?)",
+        (auth.hash_password("pass-org"), TS, TS),
+    )
+    old.execute(
+        "INSERT INTO events (id, type, title, date, time, gather_time, place, status, "
+        "reply_by, created_at, updated_at) VALUES (1, 'training', 'Тренировка', "
+        "'2026-11-10', '19:00', '18:30', 'Зал', 'planned', NULL, ?, ?)", (TS, TS),
+    )
+    old.execute(
+        "INSERT INTO events (id, type, title, date, time, gather_time, place, status, "
+        "reply_by, created_at, updated_at) VALUES (2, 'game', 'Игра', '2026-10-31', "
+        "'19:30', NULL, 'Стадион', 'planned', NULL, ?, ?)", (TS, TS),
+    )
+    old.execute("INSERT INTO attendance VALUES (1, 1, 'yes', ?)", (TS,))
+    old.execute("INSERT INTO squads VALUES (2, 'published', ?, ?)", (TS, TS))
+    old.execute("INSERT INTO squad_players VALUES (2, 1)")
+    old.commit()
+    old.close()
+    return path
+
+
+def test_stage1_database_gets_new_tables_without_data_loss(stage1_db, now):
+    from teamplan import notifications, results
+
+    conn = connect(stage1_db)
+    try:
+        tables = {r[0] for r in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+        assert {"results", "goals", "notifications"} <= tables
+
+        org = auth.login(conn, "trener", "pass-org")
+        player = auth.login(conn, "igrok1", "pass-igrok1")
+        training = events.get_event(conn, player, 1)
+        assert (training["title"], training["gather_time"]) == ("Тренировка", "18:30")
+        assert attendance.attendance_summary(conn, player, 1, now=now)["marks"] == {1: "yes"}
+        assert [p["id"] for p in squads.get_squad(conn, player, 2)["players"]] == [1]
+
+        # Новые функции работают на обновлённой базе.
+        results.save_result(conn, org, 2, 1, 0, [(1, None)], now=now)
+        assert results.player_stats(conn, player)[0]["goals"] == 1
+        assert notifications.unread_count(conn, player) == 1
+    finally:
+        conn.close()
+
+    conn = connect(stage1_db)  # повторный запуск сохраняет данные этапа 2
+    try:
+        assert conn.execute("SELECT our_score FROM results WHERE event_id = 2").fetchone()[0] == 1
+        assert conn.execute("SELECT COUNT(*) FROM notifications").fetchone()[0] == 1
+    finally:
+        conn.close()

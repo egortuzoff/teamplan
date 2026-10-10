@@ -125,8 +125,8 @@ def test_activity_has_attendance_and_reply_by(conn, org, p1, mk_event, now):
     assert summary["counts"]["maybe"] == 1
 
 
-@pytest.mark.parametrize("event_type", ["training", "game"])
-def test_gather_time_is_saved_for_training_and_game(conn, org, mk_event, event_type):
+@pytest.mark.parametrize("event_type", ["training", "game", "activity"])
+def test_gather_time_is_saved_for_any_event_type(conn, org, mk_event, event_type):
     event_id = mk_event(event_type, gather_time=time(18, 30))
     assert events.get_event(conn, org, event_id)["gather_time"] == "18:30"
     assert events.list_events(conn, org)[0]["gather_time"] == "18:30"
@@ -144,11 +144,6 @@ def test_gather_time_equal_to_start_is_allowed(conn, org, mk_event):
 def test_gather_time_after_start_is_rejected(conn, mk_event):
     with pytest.raises(ServiceError, match="не может быть позже времени начала"):
         mk_event("game", gather_time=time(19, 15))
-
-
-def test_gather_time_is_not_allowed_for_activity(conn, mk_event):
-    with pytest.raises(ServiceError, match="Для мероприятия время сбора не задаётся"):
-        mk_event("activity", gather_time=time(18, 0))
 
 
 def test_gather_time_wrong_format_is_rejected(conn, mk_event):
@@ -174,8 +169,79 @@ def test_update_rejects_start_earlier_than_gather_time(conn, org, mk_event, now)
         events.update_event(conn, org, event_id, "Т", day, time(18, 0), gather_time=time(18, 30), now=now)
 
 
-def test_update_rejects_gather_time_for_activity(conn, org, mk_event, now):
+def test_update_sets_gather_time_for_activity(conn, org, mk_event, now):
     event_id = mk_event("activity")
     day = now.date() + timedelta(days=3)
-    with pytest.raises(ServiceError, match="Для мероприятия"):
-        events.update_event(conn, org, event_id, "Т", day, time(19, 0), gather_time=time(18, 0), now=now)
+    events.update_event(conn, org, event_id, "Т", day, time(19, 0), gather_time=time(18, 0), now=now)
+    assert events.get_event(conn, org, event_id)["gather_time"] == "18:00"
+
+
+# ---------- срок «ответить до» (FR-42) ----------
+
+def test_reply_by_in_the_past_is_rejected(conn, mk_event):
+    with pytest.raises(ServiceError, match="не может быть в прошлом"):
+        mk_event(reply_by="2026-11-02 11:59")
+
+
+def test_reply_by_now_is_allowed(conn, org, mk_event):
+    event_id = mk_event(reply_by="2026-11-02 12:00")
+    assert events.get_event(conn, org, event_id)["reply_by"] == "2026-11-02 12:00"
+
+
+def test_reply_by_after_start_is_rejected(conn, mk_event):
+    # Событие 2026-11-05 19:00.
+    with pytest.raises(ServiceError, match="позже начала события"):
+        mk_event("activity", reply_by="2026-11-05 19:01")
+
+
+def test_reply_by_equal_to_start_is_allowed(conn, org, mk_event):
+    event_id = mk_event(reply_by="2026-11-05 19:00")
+    assert events.get_event(conn, org, event_id)["reply_by"] == "2026-11-05 19:00"
+
+
+def test_changed_reply_by_in_the_past_is_rejected(conn, org, mk_event, now):
+    event_id = mk_event(reply_by="2026-11-04 18:00")
+    day = now.date() + timedelta(days=3)
+    with pytest.raises(ServiceError, match="не может быть в прошлом"):
+        events.update_event(conn, org, event_id, "Т", day, time(19, 0),
+                            reply_by="2026-11-01 18:00", now=now)
+
+
+def test_editing_after_reply_by_passed_is_not_blocked(conn, org, mk_event, now):
+    event_id = mk_event(reply_by="2026-11-04 18:00")
+    later = datetime(2026, 11, 4, 20, 0)  # срок уже наступил, событие ещё не началось
+    day = now.date() + timedelta(days=3)
+    events.update_event(conn, org, event_id, "Новое название", day, time(19, 0), "Зал",
+                        reply_by="2026-11-04 18:00", now=later)
+    event = events.get_event(conn, org, event_id)
+    assert event["title"] == "Новое название" and event["reply_by"] == "2026-11-04 18:00"
+    with pytest.raises(ServiceError, match="не может быть в прошлом"):
+        events.update_event(conn, org, event_id, "Т", day, time(19, 0),
+                            reply_by="2026-11-04 19:00", now=later)
+
+
+def test_moving_start_before_reply_by_is_rejected(conn, org, mk_event, now):
+    event_id = mk_event(reply_by="2026-11-04 18:00")
+    with pytest.raises(ServiceError, match="позже начала события"):
+        events.update_event(conn, org, event_id, "Т", now.date() + timedelta(days=1), time(19, 0),
+                            reply_by="2026-11-04 18:00", now=now)
+
+
+# ---------- удаление игры с результатом (FR-14) ----------
+
+def test_game_with_result_cannot_be_deleted(conn, org, played_game, now):
+    from teamplan import results
+
+    results.save_result(conn, org, played_game, 0, 0, [], now=now)
+    with pytest.raises(ServiceError, match="с внесённым результатом удалить нельзя"):
+        events.delete_event(conn, org, played_game)
+    assert events.get_event(conn, org, played_game)["id"] == played_game
+
+
+def test_delete_event_removes_its_notifications(conn, org, p1, mk_event, now):
+    event_id = mk_event()
+    attendance.set_attendance(conn, p1, event_id, p1.player_id, "yes", now=now)
+    events.cancel_event(conn, org, event_id, now=now)
+    assert conn.execute("SELECT COUNT(*) FROM notifications").fetchone()[0] == 1
+    events.delete_event(conn, org, event_id)
+    assert conn.execute("SELECT COUNT(*) FROM notifications").fetchone()[0] == 0

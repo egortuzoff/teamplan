@@ -68,3 +68,15 @@ def test_organizer_can_also_be_a_player(conn):
     assert boss.is_organizer and boss.player_id is not None
     players.delete_player(conn, boss, boss.player_id)
     assert auth.login(conn, "boss", "pass-boss").is_organizer
+
+
+def test_cannot_delete_player_with_goal_or_assist(conn, org, p1, p2, played_game, now):
+    from teamplan import results, squads
+
+    results.save_result(conn, org, played_game, 1, 0, [(p1.player_id, p2.player_id)], now=now)
+    # Голы проверяются раньше состава: причина отказа — именно гол или передача.
+    for player in (p1, p2):
+        with pytest.raises(ServiceError, match="гол или передача"):
+            players.delete_player(conn, org, player.player_id)
+    assert len(players.list_players(conn, org)) == 2
+    assert squads.get_squad(conn, org, played_game)["state"] == "published"

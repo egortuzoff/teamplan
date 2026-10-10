@@ -32,8 +32,9 @@ CREATE TABLE IF NOT EXISTS {name} (
 );
 """
 
-# Схема рассчитана на этап 2: таблицы результатов, голов и уведомлений
-# добавляются отдельными таблицами без переделки существующих.
+# Таблицы создаются через IF NOT EXISTS: при запуске на базе прежней версии
+# недостающие таблицы (результаты, голы, уведомления) добавляются, данные
+# существующих таблиц не затрагиваются.
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS players (
     id          INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -77,6 +78,35 @@ CREATE TABLE IF NOT EXISTS squad_players (
     player_id   INTEGER NOT NULL REFERENCES players(id) ON DELETE RESTRICT,
     PRIMARY KEY (event_id, player_id)
 );
+
+CREATE TABLE IF NOT EXISTS results (
+    event_id     INTEGER PRIMARY KEY REFERENCES events(id) ON DELETE RESTRICT,
+    our_score    INTEGER NOT NULL CHECK (our_score >= 0),
+    their_score  INTEGER NOT NULL CHECK (their_score >= 0),
+    created_at   TEXT NOT NULL,
+    updated_at   TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS goals (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    event_id    INTEGER NOT NULL REFERENCES results(event_id) ON DELETE CASCADE,
+    scorer_id   INTEGER NOT NULL REFERENCES players(id) ON DELETE RESTRICT,
+    assist_id   INTEGER REFERENCES players(id) ON DELETE RESTRICT,
+    CHECK (assist_id IS NULL OR assist_id <> scorer_id)
+);
+
+CREATE TABLE IF NOT EXISTS notifications (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id     INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    event_id    INTEGER NOT NULL REFERENCES events(id) ON DELETE CASCADE,
+    kind        TEXT NOT NULL CHECK (kind IN (
+                    'moved', 'cancelled', 'squad_published', 'squad_changed', 'result')),
+    text        TEXT NOT NULL,
+    created_at  TEXT NOT NULL,
+    read_at     TEXT
+);
+
+CREATE INDEX IF NOT EXISTS notifications_user ON notifications (user_id, id);
 """.replace("{events_table}", EVENTS_TABLE.format(name="events").strip())
 
 
