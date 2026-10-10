@@ -1,4 +1,4 @@
-"""События: тренировки, сборы и игры (FR-9 – FR-15)."""
+"""События: тренировки, игры и мероприятия (FR-9 – FR-15, FR-41)."""
 from . import auth
 from .common import (
     clean_text, current_time, event_start, norm_date, norm_optional_datetime,
@@ -7,7 +7,9 @@ from .common import (
 from .db import transaction
 from .errors import ServiceError
 
-EVENT_TYPES = {"training": "Тренировка", "camp": "Сбор", "game": "Игра"}
+EVENT_TYPES = {"training": "Тренировка", "game": "Игра", "activity": "Мероприятие"}
+# Типы, для которых доступно время сбора (FR-41).
+GATHER_TYPES = ("training", "game")
 STATUS_LABELS = {"planned": "Запланировано", "cancelled": "Отменено"}
 
 
@@ -38,34 +40,49 @@ def _check_reply_by(event_type, reply_by):
     return reply_by
 
 
+def _check_gather_time(event_type, gather_time, start_time):
+    """Время сбора (FR-41): только для тренировки и игры, не позже начала."""
+    if gather_time is None or gather_time == "":
+        return None
+    if event_type not in GATHER_TYPES:
+        raise ServiceError("Для мероприятия время сбора не задаётся.")
+    gather_time = norm_time(gather_time, "Время сбора")
+    if gather_time > start_time:
+        raise ServiceError("Время сбора не может быть позже времени начала события.")
+    return gather_time
+
+
 def create_event(conn, actor, event_type, title, date, time, place=None,
-                 reply_by=None, now=None):
+                 reply_by=None, now=None, gather_time=None):
     """Организатор создаёт событие (FR-9, FR-10). Возвращает id события."""
     auth.require_organizer(conn, actor)
     if event_type not in EVENT_TYPES:
-        raise ServiceError("Тип события: выберите тренировку, сбор или игру.")
+        raise ServiceError("Тип события: выберите тренировку, игру или мероприятие.")
     title = clean_text(title, "Название", 120)
     date = norm_date(date, "Дата")
     time = norm_time(time, "Время")
     place = clean_text(place, "Место", 120, required=False)
     reply_by = _check_reply_by(event_type, reply_by)
+    gather_time = _check_gather_time(event_type, gather_time, time)
     if date < current_time(now).strftime("%Y-%m-%d"):
         raise ServiceError("Дата события не может быть в прошлом.")
     with transaction(conn):
         ts = stamp(now)
         return conn.execute(
-            "INSERT INTO events (type, title, date, time, place, status, reply_by, "
-            "created_at, updated_at) VALUES (?, ?, ?, ?, ?, 'planned', ?, ?, ?)",
-            (event_type, title, date, time, place, reply_by, ts, ts),
+            "INSERT INTO events (type, title, date, time, gather_time, place, status, "
+            "reply_by, created_at, updated_at) "
+            "VALUES (?, ?, ?, ?, ?, ?, 'planned', ?, ?, ?)",
+            (event_type, title, date, time, gather_time, place, reply_by, ts, ts),
         ).lastrowid
 
 
 def update_event(conn, actor, event_id, title, date, time, place=None,
-                 reply_by=None, now=None):
+                 reply_by=None, now=None, gather_time=None):
     """Организатор меняет поля события (FR-11). Тип события не меняется.
 
     Отметки явки при этом сохраняются.
-    TODO этап 2: создавать уведомление при изменении даты, времени или места.
+    TODO этап 2: создавать уведомление о переносе при изменении даты, времени,
+    времени сбора или места (п. 4.5): сравнить новые значения со старыми в row.
     """
     auth.require_organizer(conn, actor)
     row = _get_event_row(conn, event_id)
@@ -76,13 +93,14 @@ def update_event(conn, actor, event_id, title, date, time, place=None,
     time = norm_time(time, "Время")
     place = clean_text(place, "Место", 120, required=False)
     reply_by = _check_reply_by(row["type"], reply_by)
+    gather_time = _check_gather_time(row["type"], gather_time, time)
     if date != row["date"] and date < current_time(now).strftime("%Y-%m-%d"):
         raise ServiceError("Дата события не может быть в прошлом.")
     with transaction(conn):
         conn.execute(
-            "UPDATE events SET title = ?, date = ?, time = ?, place = ?, "
-            "reply_by = ?, updated_at = ? WHERE id = ?",
-            (title, date, time, place, reply_by, stamp(now), event_id),
+            "UPDATE events SET title = ?, date = ?, time = ?, gather_time = ?, "
+            "place = ?, reply_by = ?, updated_at = ? WHERE id = ?",
+            (title, date, time, gather_time, place, reply_by, stamp(now), event_id),
         )
 
 

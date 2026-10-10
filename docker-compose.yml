@@ -6,7 +6,8 @@ services:
     build: .
     image: teamplan
     ports:
-      - "8501:8501"
+      # ТБ-6: приложение доступно только с этого компьютера.
+      - "127.0.0.1:8501:8501"
     environment:
       TEAMPLAN_DB: /data/teamplan.db
     volumes:

@@ -1,4 +1,4 @@
-"""Создаёт тестовые данные: организатора, трёх вымышленных игроков и три события.
+"""Создаёт тестовые данные (п. 7.3 ТЗ): организатора, трёх вымышленных игроков и три события.
 
 Запуск:   python seed.py
 Заново:   python seed.py --reset   (удаляет файл базы и создаёт данные с нуля)
@@ -32,7 +32,11 @@ def main():
 
     conn = connect()
     if conn.execute("SELECT 1 FROM users LIMIT 1").fetchone():
-        print("В базе уже есть данные. Чтобы создать их заново, выполните: python seed.py --reset")
+        print(
+            "В базе уже есть данные, они не изменены. Чтобы создать тестовые данные заново:\n"
+            "  без Docker: python seed.py --reset\n"
+            "  в Docker:   docker compose down -v, затем docker compose up --build"
+        )
         conn.close()
         return 0
 
@@ -51,14 +55,17 @@ def main():
     training = events.create_event(
         conn, org, "training", "Тренировка", today + timedelta(days=2), time(19, 0),
         "Основной зал", reply_by=datetime.combine(today + timedelta(days=1), time(18, 0)),
+        gather_time=time(18, 30),
     )
     events.create_event(
-        conn, org, "camp", "Выездной сбор", today + timedelta(days=9), time(10, 0), "База отдыха"
+        conn, org, "activity", "Выезд на базу отдыха", today + timedelta(days=9), time(10, 0),
+        "База отдыха",
     )
     game = events.create_event(
         conn, org, "game", "Игра с командой «Соперник»", today + timedelta(days=5), time(19, 30),
-        "Стадион",
+        "Стадион", gather_time=time(18, 45),
     )
+    # TODO этап 2: счёт игры 2:1 из п. 7.3 ТЗ вносится, когда появится результат игры.
     squads.save_squad(conn, org, game, [ids[0], ids[1]])
     squads.publish_squad(conn, org, game)
 

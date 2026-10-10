@@ -1,2 +1,6 @@
 [browser]
 gatherUsageStats = false
+
+[client]
+# Скрывает кнопку Deploy и другие пункты меню для разработчика.
+toolbarMode = "viewer"
