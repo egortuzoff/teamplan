@@ -18,9 +18,36 @@ def test_today_is_allowed(conn, org, now):
     events.create_event(conn, org, "training", "Тренировка", now.date(), time(19, 0), now=now)
 
 
-def test_empty_title_is_rejected(conn, org, now):
-    with pytest.raises(ServiceError, match="Название"):
-        events.create_event(conn, org, "training", "   ", now.date(), time(19, 0), now=now)
+# FR-10: пустое название, название из пробелов и из невидимых символов
+# (нулевой ширины пробел, BOM, заполнитель хангыль и т. п.) отклоняются.
+BLANK_TITLES = [
+    "", None, " ", "     ", "\t\n", "\u00a0\u3000",
+    "\u200b", "\u200b \u200b", "\ufeff", "\u2060", "\u200e", "\u00ad", "\u3164", "\u2800",
+]
+
+
+@pytest.mark.parametrize("title", BLANK_TITLES)
+@pytest.mark.parametrize("event_type", ["training", "game", "activity"])
+def test_blank_title_is_rejected_on_create(conn, org, now, title, event_type):
+    with pytest.raises(ServiceError, match="Название: поле обязательно для заполнения"):
+        events.create_event(conn, org, event_type, title, now.date(), time(19, 0), now=now)
+    assert events.list_events(conn, org) == []
+
+
+@pytest.mark.parametrize("title", BLANK_TITLES)
+def test_blank_title_is_rejected_on_update(conn, org, mk_event, now, title):
+    ev = mk_event(title="Тренировка")
+    old = events.get_event(conn, org, ev)
+    with pytest.raises(ServiceError, match="Название: поле обязательно для заполнения"):
+        events.update_event(conn, org, ev, title, old["date"], old["time"], now=now)
+    assert events.get_event(conn, org, ev)["title"] == "Тренировка"
+
+
+def test_title_is_trimmed_and_text_with_spaces_is_kept(conn, org, now):
+    ev = events.create_event(
+        conn, org, "training", "  Лёд  2  ", now.date(), time(19, 0), now=now
+    )
+    assert events.get_event(conn, org, ev)["title"] == "Лёд  2"
 
 
 def test_unknown_type_is_rejected(conn, org, now):

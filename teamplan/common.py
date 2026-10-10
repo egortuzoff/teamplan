@@ -1,4 +1,5 @@
 """Общие функции: даты, время, проверка текстовых полей."""
+import unicodedata
 from datetime import date, datetime, time
 
 from .errors import ServiceError
@@ -60,10 +61,29 @@ def norm_optional_datetime(value, label):
     raise ServiceError(f"{label}: укажите дату и время в формате ГГГГ-ММ-ДД ЧЧ:ММ.")
 
 
+# Символы, которые не видны на экране, но не считаются пробелами в str.strip():
+# заполнители хангыль и пустой символ Брайля.
+INVISIBLE_CHARS = {"\u115f", "\u1160", "\u3164", "\uffa0", "\u2800"}
+
+
+def is_blank(text):
+    """True, если в тексте нет ни одного видимого символа.
+
+    Пробелы, переводы строк, нулевой ширины пробелы, метки направления текста
+    и подобные служебные символы видимым текстом не считаются (FR-10).
+    """
+    return all(
+        ch.isspace()
+        or ch in INVISIBLE_CHARS
+        or unicodedata.category(ch) in ("Cc", "Cf", "Zs", "Zl", "Zp")
+        for ch in text
+    )
+
+
 def clean_text(value, label, max_len, required=True):
     """Обрезает пробелы и проверяет обязательность и длину текста."""
     text = (value or "").strip()
-    if not text:
+    if is_blank(text):
         if required:
             raise ServiceError(f"{label}: поле обязательно для заполнения.")
         return None

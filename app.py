@@ -5,7 +5,9 @@
 """
 import logging
 from datetime import datetime, time
+from pathlib import Path
 
+import pandas as pd
 import streamlit as st
 
 from teamplan import attendance, auth, events, notifications, players, results, squads
@@ -22,6 +24,21 @@ PAGE_NEW_EVENT = "Новое событие"
 PAGE_PLAYERS = "Игроки"
 
 TYPE_OPTIONS = list(events.EVENT_TYPES)
+
+# Оформление в цветах команды. Сами цвета темы — в .streamlit/config.toml.
+TEAM_NAME = "ХК «Иркутский Политех»"
+PAGE_TITLE = "ХК Иркутский Политех — TeamPlan"
+LOGO = Path(__file__).parent / "assets" / "logo.png"
+TYPE_ICONS = {"training": "⛸️", "game": "🏒", "activity": "👥"}
+CANCELLED_MARK = "🚫 Отменено"
+CANCELLED_TEXT_COLOR = "#5B6275"  # серый, контраст на белом 6.1:1
+# Цвета статусов явки: «буду» — зелёный, «под вопросом» — жёлтый, «не буду» — красный.
+ATTENDANCE_COLORS = {"yes": "green", "maybe": "yellow", "no": "red", "none": "gray"}
+ATTENDANCE_DOTS = {"yes": "🟢", "maybe": "🟡", "no": "🔴", "none": "⚪"}
+NO_ANSWER_LABEL = "Не ответили"
+WEEKDAYS = ["пн", "вт", "ср", "чт", "пт", "сб", "вс"]
+UPCOMING_CARDS = 4
+MD_SPECIAL = set("\\`*_{}[]<>()#+-.!|~:$")
 
 
 # ---------- вспомогательные функции ----------
@@ -62,9 +79,37 @@ def to_time(value):
     return datetime.strptime(value, TIME_FMT).time()
 
 
+def md(text):
+    """Экранирует Markdown в пользовательском тексте (названия, места)."""
+    return "".join("\\" + ch if ch in MD_SPECIAL else ch for ch in text)
+
+
+def type_text(ev):
+    return f"{TYPE_ICONS[ev['type']]} {ev['type_label']}"
+
+
+def status_text(ev):
+    return CANCELLED_MARK if ev["status"] == "cancelled" else ev["status_label"]
+
+
+def event_badges(ev):
+    """Значки типа и статуса события в виде Markdown."""
+    if ev["status"] == "cancelled":
+        return f":gray-badge[{type_text(ev)}] :red-badge[{CANCELLED_MARK}]"
+    return f":blue-badge[{type_text(ev)}] :green-badge[{ev['status_label']}]"
+
+
+def attendance_text(key):
+    label = NO_ANSWER_LABEL if key == "none" else attendance.ATTENDANCE_LABELS[key]
+    return f"{ATTENDANCE_DOTS[key]} {label}"
+
+
 def event_label(ev):
-    suffix = " (отменено)" if ev["status"] == "cancelled" else ""
-    return f"{format_date(ev['date'])} {ev['time']} · {ev['type_label']} · {ev['title']}{suffix}"
+    suffix = f" · {CANCELLED_MARK}" if ev["status"] == "cancelled" else ""
+    return (
+        f"{format_date(ev['date'])} {ev['time']} · {TYPE_ICONS[ev['type']]} "
+        f"{ev['type_label']} · {ev['title']}{suffix}"
+    )
 
 
 def player_label(p):
@@ -74,13 +119,23 @@ def player_label(p):
 # ---------- вход ----------
 
 def show_login(conn):
-    st.title("TeamPlan")
-    st.caption("Расписание, явка и составы команды")
-    with st.form("login_form"):
-        login_name = st.text_input("Логин")
-        password = st.text_input("Пароль", type="password")
-        submitted = st.form_submit_button("Войти")
-    if submitted:
+    _, middle, _ = st.columns([1, 2, 1])
+    with middle:
+        with st.container(horizontal_alignment="center"):
+            st.image(str(LOGO), width=160)
+        st.title(TEAM_NAME, text_alignment="center")
+        st.markdown(
+            "Добро пожаловать в **TeamPlan**! Здесь расписание тренировок и игр, "
+            "отметки явки, составы и результаты команды.",
+            text_alignment="center",
+        )
+        with st.form("login_form"):
+            login_name = st.text_input("Логин")
+            password = st.text_input("Пароль", type="password")
+            submitted = st.form_submit_button("Войти", type="primary", width="stretch")
+    if not submitted:
+        return
+    with middle:
         try:
             actor = auth.login(conn, login_name, password)
         except ServiceError as exc:
@@ -92,6 +147,10 @@ def show_login(conn):
 
 
 def show_sidebar(conn, actor):
+    st.logo(str(LOGO), size="large")
+    st.sidebar.markdown(f"### {TEAM_NAME}")
+    st.sidebar.caption("TeamPlan — расписание команды")
+    st.sidebar.divider()
     st.sidebar.markdown(f"**{actor.name}**")
     st.sidebar.caption(auth.ROLE_LABELS[actor.role])
     pages = [PAGE_SCHEDULE, PAGE_STATS, PAGE_NOTIFICATIONS]
@@ -122,20 +181,39 @@ def show_schedule(conn, actor):
         hint = " Создайте первое в разделе «Новое событие»." if actor.is_organizer else ""
         st.info("Событий нет." + hint)
         return
-    st.dataframe(
+    show_upcoming(evs)
+    st.subheader("Все события")
+    table = pd.DataFrame(
         [
             {
                 "Дата": format_date(e["date"]),
                 "Время": e["time"],
                 "Время сбора": e["gather_time"] or "",
-                "Тип": e["type_label"],
+                "Тип": type_text(e),
                 "Название": e["title"],
                 "Место": e["place"] or "",
-                "Статус": e["status_label"],
+                "Статус": status_text(e),
             }
             for e in evs
-        ],
-        hide_index=True,
+        ]
+    )
+    cancelled = [e["status"] == "cancelled" for e in evs]
+    # Отменённые события в таблице — серым текстом.
+    styled = table.style.apply(
+        lambda row: [
+            f"color: {CANCELLED_TEXT_COLOR}" if cancelled[row.name] else ""
+        ] * len(row),
+        axis=1,
+    )
+    st.dataframe(
+        styled, hide_index=True,
+        column_config={
+            **{
+                name: st.column_config.TextColumn(width="small")
+                for name in ("Дата", "Время", "Время сбора")
+            },
+            "Название": st.column_config.TextColumn(width="medium"),
+        },
     )
     ids = [e["id"] for e in evs]
     by_id = {e["id"]: e for e in evs}
@@ -152,17 +230,57 @@ def show_schedule(conn, actor):
     show_event_card(conn, actor, by_id[event_id])
 
 
+def open_event(event_id):
+    """Выбирает событие в списке «Открыть событие» (вызывается до отрисовки списка)."""
+    st.session_state["event_select"] = event_id
+
+
+def show_upcoming(evs):
+    """Карточки ближайших будущих событий над таблицей расписания."""
+    now = datetime.now()
+    upcoming = [e for e in evs if e["start"] >= now][:UPCOMING_CARDS]
+    if not upcoming:
+        return
+    st.subheader("Ближайшие события")
+    cols = st.columns(UPCOMING_CARDS)
+    for col, ev in zip(cols, upcoming):
+        cancelled = ev["status"] == "cancelled"
+        with col.container(border=True, height="stretch"):
+            st.markdown(event_badges(ev))
+            title = md(ev["title"])
+            st.markdown(f":gray[~~{title}~~]" if cancelled else f"**{title}**")
+            day = to_date(ev["date"])
+            lines = [
+                f"📅 {format_date(ev['date'])}, {WEEKDAYS[day.weekday()]}",
+                f"🕖 Начало: {ev['time']}",
+            ]
+            if ev["gather_time"]:
+                lines.append(f"⏰ Сбор: {ev['gather_time']}")
+            lines.append(f"📍 {md(ev['place'])}" if ev["place"] else "📍 Место не указано")
+            text = "  \n".join(lines)
+            st.markdown(f":gray[{text}]" if cancelled else text)
+            st.button(
+                "Открыть", key=f"card_open_{ev['id']}", width="stretch",
+                on_click=open_event, args=(ev["id"],),
+            )
+
+
 def show_event_card(conn, actor, ev):
     st.divider()
-    st.subheader(ev["title"])
-    line = f"{ev['type_label']} · {format_date(ev['date'])} в {ev['time']}"
+    cancelled = ev["status"] == "cancelled"
+    title = md(ev["title"])
+    st.subheader(
+        f"{TYPE_ICONS[ev['type']]} " + (f":gray[~~{title}~~]" if cancelled else title)
+    )
+    st.markdown(event_badges(ev))
+    line = f"📅 {format_date(ev['date'])} в {ev['time']}"
     if ev["gather_time"]:
-        line += f" · сбор в {ev['gather_time']}"
+        line += f" · ⏰ сбор в {ev['gather_time']}"
     if ev["place"]:
-        line += f" · {ev['place']}"
-    st.write(line)
-    if ev["status"] == "cancelled":
-        st.warning("Событие отменено.")
+        line += f" · 📍 {md(ev['place'])}"
+    st.markdown(line)
+    if cancelled:
+        st.error("Событие отменено.", icon="🚫")
     if ev["type"] == "game":
         show_squad(conn, actor, ev)
         show_result(conn, actor, ev)
@@ -179,10 +297,9 @@ def show_attendance(conn, actor, ev):
         st.caption(f"Ответить до: {format_datetime(ev['reply_by'])}")
     counts = summary["counts"]
     cols = st.columns(4)
-    cols[0].metric("Буду", counts["yes"])
-    cols[1].metric("Под вопросом", counts["maybe"])
-    cols[2].metric("Не буду", counts["no"])
-    cols[3].metric("Не ответили", counts["none"])
+    for col, key in zip(cols, ("yes", "maybe", "no", "none")):
+        with col.container(border=True):
+            st.metric(f":{ATTENDANCE_COLORS[key]}[{attendance_text(key)}]", counts[key])
 
     missing = ", ".join(p["name"] for p in summary["by_status"]["none"])
     if summary["highlight_missing"]:
@@ -190,9 +307,9 @@ def show_attendance(conn, actor, ev):
     elif missing:
         st.info(f"Ещё не ответили: {missing}")
     for key in ("yes", "maybe", "no"):
-        names = ", ".join(p["name"] for p in summary["by_status"][key])
+        names = ", ".join(md(p["name"]) for p in summary["by_status"][key])
         if names:
-            st.write(f"**{attendance.ATTENDANCE_LABELS[key]}:** {names}")
+            st.markdown(f":{ATTENDANCE_COLORS[key]}-badge[{attendance_text(key)}] {names}")
 
     if ev["status"] == "cancelled":
         st.caption("Событие отменено, явку отметить нельзя.")
@@ -221,7 +338,7 @@ def show_attendance(conn, actor, ev):
             "Моя явка" if not actor.is_organizer else "Явка",
             options,
             index=options.index(current) if current else None,
-            format_func=lambda k: attendance.ATTENDANCE_LABELS[k],
+            format_func=lambda k: f":{ATTENDANCE_COLORS[k]}[{attendance_text(k)}]",
             key=f"att_choice_{ev['id']}_{target}",
         )
         submitted = st.form_submit_button("Сохранить отметку")
@@ -508,7 +625,7 @@ def show_new_event(conn, actor):
     today = datetime.now().date()
     # Тип выбирается вне формы, чтобы набор полей сразу менялся под тип события.
     event_type = st.selectbox(
-        "Тип", TYPE_OPTIONS, format_func=lambda k: events.EVENT_TYPES[k],
+        "Тип", TYPE_OPTIONS, format_func=lambda k: f"{TYPE_ICONS[k]} {events.EVENT_TYPES[k]}",
         key=f"ne_type_{ver}",
     )
     with st.form(f"new_event_form_{ver}"):
@@ -625,7 +742,7 @@ def show_players(conn, actor):
 # ---------- точка входа ----------
 
 def main():
-    st.set_page_config(page_title="TeamPlan", page_icon="📅", layout="wide")
+    st.set_page_config(page_title=PAGE_TITLE, page_icon=str(LOGO), layout="wide")
     conn = connect()
     try:
         show_flash()
