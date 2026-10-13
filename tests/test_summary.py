@@ -23,11 +23,14 @@ def test_game_without_score_has_no_outcome():
 def test_games_table_score_and_outcome(conn, org, p1, p2, played_game, mk_event, now):
     results.save_result(conn, org, played_game, 2, 1, [(p1.player_id, p2.player_id)], now=now)
     future = mk_event("game", title="Будущая игра")
-    rows = summary.games_table(conn, p1)
+    rows = summary.games_table(conn, p1, now=now)
     assert [r["id"] for r in rows] == [played_game, future]
     played, upcoming = rows
     assert (played["score"], played["outcome"]) == ("2 : 1", "Победа")
     assert (upcoming["score"], upcoming["outcome"]) == ("—", "—")
+    # Статус в таблице — по FR-48.
+    assert played["display_status_label"] == "Сыграна"
+    assert upcoming["display_status_label"] == "Запланировано"
     assert upcoming["our_score"] is None
 
 
@@ -91,10 +94,10 @@ def test_cancelled_events_stay_in_order(conn, org, p1, mk_event, now):
     early = mk_event("activity", days=2, hour=18)
     same_day_earlier = mk_event("activity", days=5, hour=9)
     events.cancel_event(conn, org, early, now=now)
-    rows = summary.attendance_table(conn, p1, "activity")
+    rows = summary.attendance_table(conn, p1, "activity", now=now)
     assert [r["id"] for r in rows] == [early, same_day_earlier, late]
     assert rows[0]["status"] == "cancelled"
-    assert rows[0]["status_label"] == "Отменено"
+    assert [r["display_status_label"] for r in rows] == ["Отменено", "Запланировано", "Запланировано"]
 
     game = mk_event("game", days=1)
     events.cancel_event(conn, org, game, now=now)

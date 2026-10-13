@@ -272,3 +272,75 @@ def test_delete_event_removes_its_notifications(conn, org, p1, mk_event, now):
     assert conn.execute("SELECT COUNT(*) FROM notifications").fetchone()[0] == 1
     events.delete_event(conn, org, event_id)
     assert conn.execute("SELECT COUNT(*) FROM notifications").fetchone()[0] == 0
+
+
+# ---------- статус для показа (FR-48) ----------
+
+def _status(conn, actor, event_id, now):
+    ev = events.get_event(conn, actor, event_id, now=now)
+    return ev["display_status"], ev["display_status_label"]
+
+
+@pytest.mark.parametrize("event_type", ["training", "activity", "game"])
+def test_future_event_is_planned(conn, org, mk_event, now, event_type):
+    ev = mk_event(event_type)
+    assert _status(conn, org, ev, now) == ("planned", "Запланировано")
+
+
+@pytest.mark.parametrize("event_type", ["training", "activity"])
+def test_started_training_or_activity_is_past(conn, org, mk_event, now, event_type):
+    ev = mk_event(event_type, days=1, hour=19)
+    start = datetime(2026, 11, 3, 19, 0)
+    assert _status(conn, org, ev, start - timedelta(minutes=1))[0] == "planned"
+    # Ровно в момент начала событие уже началось.
+    assert _status(conn, org, ev, start) == ("past", "Прошло")
+    assert _status(conn, org, ev, start + timedelta(days=1))[0] == "past"
+
+
+def test_started_game_with_score_is_played(conn, org, p1, played_game, now):
+    from teamplan import results
+
+    results.save_result(conn, org, played_game, 2, 1, [(p1.player_id, None)], now=now)
+    assert _status(conn, p1, played_game, now) == ("played", "Сыграна")
+
+
+def test_started_game_without_score(conn, org, p1, played_game, now):
+    assert _status(conn, p1, played_game, now) == ("no_score", "Счёт не внесён")
+
+
+def test_game_status_at_start_boundary(conn, org, mk_event, now):
+    game = mk_event("game", days=1, hour=19)
+    start = datetime(2026, 11, 3, 19, 0)
+    assert _status(conn, org, game, start - timedelta(seconds=1))[0] == "planned"
+    assert _status(conn, org, game, start)[0] == "no_score"
+
+
+def test_cancelled_event_is_cancelled(conn, org, mk_event, now):
+    ev = mk_event("training")
+    events.cancel_event(conn, org, ev, now=now)
+    # Отмена важнее времени: и после начала событие остаётся «Отменено».
+    assert _status(conn, org, ev, now) == ("cancelled", "Отменено")
+    assert _status(conn, org, ev, now + timedelta(days=30))[0] == "cancelled"
+
+
+def test_display_status_in_list(conn, org, mk_event, now):
+    ev = mk_event("activity")
+    [item] = events.list_events(conn, org, now=now)
+    assert item["id"] == ev and item["display_status"] == "planned"
+    # В базе по-прежнему хранится только признак отмены.
+    assert conn.execute("SELECT status FROM events WHERE id = ?", (ev,)).fetchone()[0] == "planned"
+
+
+@pytest.mark.parametrize("status, event_type, started, scored, expected", [
+    ("cancelled", "game", True, True, "cancelled"),
+    ("planned", "training", False, False, "planned"),
+    ("planned", "game", False, True, "planned"),
+    ("planned", "training", True, False, "past"),
+    ("planned", "activity", True, False, "past"),
+    ("planned", "game", True, True, "played"),
+    ("planned", "game", True, False, "no_score"),
+])
+def test_display_status_rules(status, event_type, started, scored, expected):
+    event = {"status": status, "type": event_type, "date": "2026-11-02", "time": "12:00"}
+    now = datetime(2026, 11, 2, 12, 0) if started else datetime(2026, 11, 2, 11, 59)
+    assert events.display_status(event, scored, now) == expected

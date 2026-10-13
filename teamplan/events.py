@@ -1,4 +1,4 @@
-"""События: тренировки, игры и мероприятия (FR-9 – FR-15, FR-41, FR-42)."""
+"""События: тренировки, игры и мероприятия (FR-9 – FR-15, FR-41, FR-42, FR-48)."""
 from datetime import datetime
 
 from . import auth, notifications
@@ -11,6 +11,14 @@ from .errors import ServiceError
 
 EVENT_TYPES = {"training": "Тренировка", "game": "Игра", "activity": "Мероприятие"}
 STATUS_LABELS = {"planned": "Запланировано", "cancelled": "Отменено"}
+# Статус для показа (FR-48): в базе хранится только признак отмены, остальное вычисляется.
+DISPLAY_STATUS_LABELS = {
+    "cancelled": "Отменено",
+    "planned": "Запланировано",
+    "past": "Прошло",
+    "played": "Сыграна",
+    "no_score": "Счёт не внесён",
+}
 
 
 def _get_event_row(conn, event_id):
@@ -20,17 +28,39 @@ def _get_event_row(conn, event_id):
     return row
 
 
-def _to_dict(row):
+def is_started(event, now=None):
+    """Событие уже началось (event — словарь из get_event или list_events)."""
+    return event_start(event["date"], event["time"]) <= current_time(now)
+
+
+def display_status(event, has_score, now=None):
+    """Статус события для показа (FR-48).
+
+    Отменённое — «Отменено»; до начала — «Запланировано»; с момента начала
+    тренировка и мероприятие — «Прошло», игра — «Сыграна», если счёт внесён,
+    иначе «Счёт не внесён». Время — местное (часовой пояс TZ).
+    """
+    if event["status"] == "cancelled":
+        return "cancelled"
+    if not is_started(event, now):
+        return "planned"
+    if event["type"] != "game":
+        return "past"
+    return "played" if has_score else "no_score"
+
+
+def _scored_event_ids(conn):
+    return {r["event_id"] for r in conn.execute("SELECT event_id FROM results")}
+
+
+def _to_dict(row, scored, now=None):
     item = dict(row)
     item["type_label"] = EVENT_TYPES[item["type"]]
     item["status_label"] = STATUS_LABELS[item["status"]]
     item["start"] = event_start(item["date"], item["time"])
+    item["display_status"] = display_status(item, item["id"] in scored, now)
+    item["display_status_label"] = DISPLAY_STATUS_LABELS[item["display_status"]]
     return item
-
-
-def is_started(event, now=None):
-    """Событие уже началось (event — словарь из get_event или list_events)."""
-    return event_start(event["date"], event["time"]) <= current_time(now)
 
 
 def _check_reply_by(event_type, reply_by, date, time, now=None, previous=None):
@@ -184,15 +214,16 @@ def delete_event(conn, actor, event_id):
         conn.execute("DELETE FROM events WHERE id = ?", (event_id,))
 
 
-def list_events(conn, actor):
-    """Все события по дате и времени (FR-15)."""
+def list_events(conn, actor, now=None):
+    """Все события по дате и времени со статусом для показа (FR-15, FR-48)."""
     auth.require_actor(conn, actor)
     rows = conn.execute(
         "SELECT * FROM events ORDER BY date, time, id"
     ).fetchall()
-    return [_to_dict(row) for row in rows]
+    scored = _scored_event_ids(conn)
+    return [_to_dict(row, scored, now) for row in rows]
 
 
-def get_event(conn, actor, event_id):
+def get_event(conn, actor, event_id, now=None):
     auth.require_actor(conn, actor)
-    return _to_dict(_get_event_row(conn, event_id))
+    return _to_dict(_get_event_row(conn, event_id), _scored_event_ids(conn), now)
