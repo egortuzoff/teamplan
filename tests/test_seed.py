@@ -29,6 +29,11 @@ def test_seed_creates_played_game_and_stats_match_manual_count(db_path):
         assert events.is_started(game)
         result = results.get_result(conn, player, game["id"])
         assert (result["our_score"], result["their_score"]) == (2, 1)
+        # У обеих игр вымышленные соперники (ТБ-5).
+        assert game["opponent"] == seed.PLAYED_GAME_OPPONENT
+        future = [e for e in events.list_events(conn, player)
+                  if e["type"] == "game" and e["id"] != game["id"]]
+        assert [e["opponent"] for e in future] == [seed.FUTURE_GAME_OPPONENT]
         assert result["warning"] is None
         # Ручной подсчёт: оба гола у Игрока Первого, одна передача у Игрока Второго.
         # Будущая игра без счёта в «игры» не входит.

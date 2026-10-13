@@ -85,6 +85,7 @@ def test_old_database_is_upgraded_without_data_loss(old_db, now):
         assert camp["title"] == "Выездной сбор"
         assert camp["reply_by"] == "2026-11-09 18:00"
         assert camp["gather_time"] is None
+        assert camp["opponent"] is None
         assert events.get_event(conn, player, 2)["type"] == "game"
 
         summary = attendance.attendance_summary(conn, player, 1, now=now)
@@ -186,5 +187,38 @@ def test_stage1_database_gets_new_tables_without_data_loss(stage1_db, now):
     try:
         assert conn.execute("SELECT our_score FROM results WHERE event_id = 2").fetchone()[0] == 1
         assert conn.execute("SELECT COUNT(*) FROM notifications").fetchone()[0] == 1
+    finally:
+        conn.close()
+
+
+# ---------- поле «Соперник» (ТЗ 0.6) в базе прежней версии ----------
+
+def test_opponent_column_is_added_without_data_loss(stage1_db, now):
+    """В базе без поля «Соперник» оно добавляется при запуске, данные сохраняются."""
+    old = sqlite3.connect(stage1_db)
+    assert "opponent" not in {r[1] for r in old.execute("PRAGMA table_info(events)")}
+    old.close()
+
+    conn = connect(stage1_db)
+    try:
+        assert "opponent" in {r["name"] for r in conn.execute("PRAGMA table_info(events)")}
+        org = auth.login(conn, "trener", "pass-org")
+        player = auth.login(conn, "igrok1", "pass-igrok1")
+        game = events.get_event(conn, player, 2)
+        assert (game["title"], game["place"], game["opponent"]) == ("Игра", "Стадион", None)
+        assert events.get_event(conn, player, 1)["gather_time"] == "18:30"
+        assert attendance.attendance_summary(conn, player, 1, now=now)["marks"] == {1: "yes"}
+        assert [p["id"] for p in squads.get_squad(conn, player, 2)["players"]] == [1]
+        events.update_event(conn, org, 2, game["title"], game["date"], game["time"],
+                            game["place"], now=now, opponent="Байкальские соколы")
+    finally:
+        conn.close()
+
+    conn = connect(stage1_db)  # повторный запуск не трогает столбец и данные
+    try:
+        assert conn.execute("SELECT opponent FROM events WHERE id = 2").fetchone()[0] == (
+            "Байкальские соколы"
+        )
+        assert conn.execute("SELECT COUNT(*) FROM events").fetchone()[0] == 2
     finally:
         conn.close()

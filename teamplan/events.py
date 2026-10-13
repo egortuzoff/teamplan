@@ -83,6 +83,17 @@ def _check_reply_by(event_type, reply_by, date, time, now=None, previous=None):
     return reply_by
 
 
+OPPONENT_MAX_LEN = 100
+
+
+def _check_opponent(event_type, opponent):
+    """Соперник (FR-9): необязательный, только для игры, не более 100 символов."""
+    opponent = clean_text(opponent, "Соперник", OPPONENT_MAX_LEN, required=False)
+    if opponent is not None and event_type != "game":
+        raise ServiceError("Соперник указывается только для игры.")
+    return opponent
+
+
 def _check_gather_time(gather_time, start_time):
     """Время сбора (FR-41): для событий любого типа, не позже начала."""
     if gather_time is None or gather_time == "":
@@ -94,8 +105,11 @@ def _check_gather_time(gather_time, start_time):
 
 
 def create_event(conn, actor, event_type, title, date, time, place=None,
-                 reply_by=None, now=None, gather_time=None):
-    """Организатор создаёт событие (FR-9, FR-10). Возвращает id события."""
+                 reply_by=None, now=None, gather_time=None, opponent=None):
+    """Организатор создаёт событие (FR-9, FR-10). Возвращает id события.
+
+    opponent — соперник, только для игры.
+    """
     auth.require_organizer(conn, actor)
     if event_type not in EVENT_TYPES:
         raise ServiceError("Тип события: выберите тренировку, игру или мероприятие.")
@@ -107,13 +121,14 @@ def create_event(conn, actor, event_type, title, date, time, place=None,
         raise ServiceError("Дата события не может быть в прошлом.")
     gather_time = _check_gather_time(gather_time, time)
     reply_by = _check_reply_by(event_type, reply_by, date, time, now)
+    opponent = _check_opponent(event_type, opponent)
     with transaction(conn):
         ts = stamp(now)
         return conn.execute(
-            "INSERT INTO events (type, title, date, time, gather_time, place, status, "
-            "reply_by, created_at, updated_at) "
-            "VALUES (?, ?, ?, ?, ?, ?, 'planned', ?, ?, ?)",
-            (event_type, title, date, time, gather_time, place, reply_by, ts, ts),
+            "INSERT INTO events (type, title, opponent, date, time, gather_time, place, "
+            "status, reply_by, created_at, updated_at) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, 'planned', ?, ?, ?)",
+            (event_type, title, opponent, date, time, gather_time, place, reply_by, ts, ts),
         ).lastrowid
 
 
@@ -134,8 +149,10 @@ def _move_text(row, date, time, gather_time, place):
 
 
 def update_event(conn, actor, event_id, title, date, time, place=None,
-                 reply_by=None, now=None, gather_time=None):
+                 reply_by=None, now=None, gather_time=None, opponent=None):
     """Организатор меняет поля события (FR-11). Тип события не меняется.
+
+    opponent — соперник, только для игры; пустое значение убирает соперника.
 
     Отметки явки при этом сохраняются. При изменении даты, времени, времени
     сбора или места игроки получают уведомление о переносе (п. 4.5).
@@ -152,14 +169,15 @@ def update_event(conn, actor, event_id, title, date, time, place=None,
         raise ServiceError("Дата события не может быть в прошлом.")
     gather_time = _check_gather_time(gather_time, time)
     reply_by = _check_reply_by(row["type"], reply_by, date, time, now, previous=row["reply_by"])
+    opponent = _check_opponent(row["type"], opponent)
     moved = (date, time, gather_time, place) != (
         row["date"], row["time"], row["gather_time"], row["place"]
     )
     with transaction(conn):
         conn.execute(
-            "UPDATE events SET title = ?, date = ?, time = ?, gather_time = ?, "
-            "place = ?, reply_by = ?, updated_at = ? WHERE id = ?",
-            (title, date, time, gather_time, place, reply_by, stamp(now), event_id),
+            "UPDATE events SET title = ?, opponent = ?, date = ?, time = ?, "
+            "gather_time = ?, place = ?, reply_by = ?, updated_at = ? WHERE id = ?",
+            (title, opponent, date, time, gather_time, place, reply_by, stamp(now), event_id),
         )
         if moved:
             notifications.notify(
