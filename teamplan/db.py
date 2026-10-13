@@ -20,6 +20,7 @@ CREATE TABLE IF NOT EXISTS {name} (
     id          INTEGER PRIMARY KEY AUTOINCREMENT,
     type        TEXT NOT NULL CHECK (type IN ('training', 'game', 'activity')),
     title       TEXT NOT NULL,
+    opponent    TEXT,
     date        TEXT NOT NULL,
     time        TEXT NOT NULL,
     gather_time TEXT,
@@ -127,6 +128,7 @@ def connect(path=None):
     conn.row_factory = sqlite3.Row
     conn.executescript(SCHEMA)
     _upgrade_events(conn)
+    _add_opponent(conn)
     conn.execute("PRAGMA foreign_keys = ON")
     return conn
 
@@ -147,9 +149,9 @@ def _upgrade_events(conn):
     try:
         conn.execute(EVENTS_TABLE.format(name="events_new"))
         conn.execute(
-            "INSERT INTO events_new (id, type, title, date, time, gather_time, place, "
-            "status, reply_by, created_at, updated_at) "
-            "SELECT id, CASE type WHEN 'camp' THEN 'activity' ELSE type END, title, "
+            "INSERT INTO events_new (id, type, title, opponent, date, time, gather_time, "
+            "place, status, reply_by, created_at, updated_at) "
+            "SELECT id, CASE type WHEN 'camp' THEN 'activity' ELSE type END, title, NULL, "
             "date, time, NULL, place, status, reply_by, created_at, updated_at "
             "FROM events"
         )
@@ -161,6 +163,17 @@ def _upgrade_events(conn):
         conn.rollback()
         raise
     conn.commit()
+
+
+def _add_opponent(conn):
+    """Добавляет поле «Соперник» (ТЗ 0.6) в базу прежней версии.
+
+    Столбец без значения по умолчанию добавляется без пересоздания таблицы,
+    существующие события получают пустого соперника.
+    """
+    columns = {row["name"] for row in conn.execute("PRAGMA table_info(events)")}
+    if "opponent" not in columns:
+        conn.execute("ALTER TABLE events ADD COLUMN opponent TEXT")
 
 
 @contextmanager

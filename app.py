@@ -1,4 +1,4 @@
-"""TeamPlan: расписание, явка, составы и результаты команды (ТЗ TP-TZ-001 версии 0.4).
+"""TeamPlan: расписание, явка, составы и результаты команды (ТЗ TP-TZ-001 версии 0.6).
 
 Запуск: streamlit run app.py
 Вся логика и проверка прав находятся в пакете teamplan; здесь только экраны.
@@ -16,6 +16,7 @@ from teamplan import (
 from teamplan.common import DATE_FMT, DATETIME_FMT, TIME_FMT, format_date, format_datetime
 from teamplan.db import connect
 from teamplan.errors import ServiceError
+from teamplan.settings import TEAM_NAME
 
 logger = logging.getLogger("teamplan")
 
@@ -27,9 +28,9 @@ PAGE_PLAYERS = "Игроки"
 
 TYPE_OPTIONS = list(events.EVENT_TYPES)
 
-# Оформление в цветах команды. Сами цвета темы — в .streamlit/config.toml.
-TEAM_NAME = "ХК «Иркутский Политех»"
-PAGE_TITLE = "ХК Иркутский Политех — TeamPlan"
+# Оформление в цветах команды. Сами цвета темы — в .streamlit/config.toml,
+# название команды — в teamplan/settings.py.
+PAGE_TITLE = TEAM_NAME.replace("«", "").replace("»", "") + " — TeamPlan"
 LOGO = Path(__file__).parent / "assets" / "logo.png"
 TYPE_ICONS = {"training": "⛸️", "game": "🏒", "activity": "👥"}
 CANCELLED_MARK = "🚫 Отменено"
@@ -221,7 +222,7 @@ def show_schedule(conn, actor):
         games = summary.games_table(conn, actor)
         schedule_table("game", games, [
             {
-                **event_columns(g),
+                **event_columns(g, opponent=True),
                 "Счёт": g["score"],
                 "Итог": g["outcome"],
                 "Статус": status_text(g),
@@ -255,15 +256,21 @@ def show_schedule(conn, actor):
     show_event_card(conn, actor, by_id[event_id])
 
 
-def event_columns(ev):
-    """Общие колонки таблиц игр, тренировок и мероприятий (FR-44, FR-45)."""
-    return {
+def event_columns(ev, opponent=False):
+    """Общие колонки таблиц игр, тренировок и мероприятий (FR-44, FR-45).
+
+    opponent — колонка «Соперник» после названия (только в таблице игр).
+    """
+    columns = {
         "Дата": format_date(ev["date"]),
         "Время": ev["time"],
         "Время сбора": ev["gather_time"] or "",
         "Название": ev["title"],
-        "Место": ev["place"] or "",
     }
+    if opponent:
+        columns["Соперник"] = ev["opponent"] or ""
+    columns["Место"] = ev["place"] or ""
+    return columns
 
 
 def schedule_table(name, evs, rows):
@@ -493,14 +500,14 @@ def show_result(conn, actor, ev):
     st.markdown("#### Результат")
     result = results.get_result(conn, actor, ev["id"])
     if result:
-        st.write(f"**Счёт: {result['our_score']}:{result['their_score']}** (наша команда : соперник)")
+        score = results.score_line(result["our_score"], result["their_score"], ev["opponent"])
+        st.markdown(f"**{md(score)}**")
         if result["goals"]:
-            lines = []
-            for i, g in enumerate(result["goals"], start=1):
-                line = f"{i}. {g['scorer_name']}"
-                if g["assist_name"]:
-                    line += f" (передача: {g['assist_name']})"
-                lines.append(line)
+            # Автор жирным, передающий в скобках (FR-47).
+            lines = [
+                f"{i}. " + results.goal_line(g["scorer_name"], g["assist_name"], escape=md)
+                for i, g in enumerate(result["goals"], start=1)
+            ]
             st.markdown("Голы:  \n" + "  \n".join(lines))
         else:
             st.caption("Голы не указаны.")
@@ -608,6 +615,12 @@ def show_event_admin(conn, actor, ev):
                 date_value = st.date_input("Дата", value=to_date(ev["date"]), key=f"e_date_{ev['id']}")
                 time_value = st.time_input("Время", value=to_time(ev["time"]), key=f"e_time_{ev['id']}")
                 place = st.text_input("Место", value=ev["place"] or "", key=f"e_place_{ev['id']}")
+                opponent = None
+                if ev["type"] == "game":
+                    opponent = st.text_input(
+                        "Соперник (необязательно)", value=ev["opponent"] or "",
+                        max_chars=events.OPPONENT_MAX_LEN, key=f"e_opponent_{ev['id']}",
+                    )
                 reply_by = None
                 if ev["type"] != "game":
                     reply_by = reply_by_inputs(f"e_reply_{ev['id']}", ev["reply_by"], to_date(ev["date"]))
@@ -617,7 +630,7 @@ def show_event_admin(conn, actor, ev):
                 perform(
                     lambda: events.update_event(
                         conn, actor, ev["id"], title, date_value, time_value, place, reply_by,
-                        gather_time=gather_time,
+                        gather_time=gather_time, opponent=opponent,
                     ),
                     "Изменения сохранены. Отметки явки сохранены.",
                 )
@@ -710,6 +723,12 @@ def show_new_event(conn, actor):
         date_value = st.date_input("Дата", value=today, min_value=today, key=f"ne_date_{ver}")
         time_value = st.time_input("Время", value=time(19, 0), key=f"ne_time_{ver}")
         place = st.text_input("Место (необязательно)", key=f"ne_place_{ver}")
+        opponent = None
+        if event_type == "game":
+            opponent = st.text_input(
+                "Соперник (необязательно)", max_chars=events.OPPONENT_MAX_LEN,
+                key=f"ne_opponent_{ver}",
+            )
         reply_by = None
         if event_type != "game":
             reply_by = reply_by_inputs(f"ne_reply_{ver}", None, today)
@@ -719,7 +738,7 @@ def show_new_event(conn, actor):
         try:
             new_id = events.create_event(
                 conn, actor, event_type, title, date_value, time_value, place, reply_by,
-                gather_time=gather_time,
+                gather_time=gather_time, opponent=opponent,
             )
         except ServiceError as exc:
             st.error(str(exc))

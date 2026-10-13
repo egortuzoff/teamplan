@@ -5,8 +5,10 @@ from .db import transaction
 from .errors import ServiceError
 from .events import _get_event_row
 from .players import list_players
+from .settings import TEAM_NAME
 
 MAX_SCORE = 99
+OPPONENT_PLACEHOLDER = "Соперник"
 
 
 def _check_score(value, label):
@@ -47,6 +49,28 @@ def goals_mismatch(our_score, goals):
         f"Внимание: голов в списке {len(goals)}, а счёт нашей команды {our_score}. "
         "Результат сохранён, при необходимости исправьте его."
     )
+
+
+def score_line(our_score, their_score, opponent=None):
+    """Счёт в карточке игры (FR-47): «Счёт: 3 : 1 (наша команда : соперник)».
+
+    Если соперник не указан, вместо названия пишется «Соперник».
+    """
+    return (
+        f"Счёт: {our_score} : {their_score} "
+        f"({TEAM_NAME} : {opponent or OPPONENT_PLACEHOLDER})"
+    )
+
+
+def goal_line(scorer_name, assist_name=None, escape=str):
+    """Строка гола в Markdown (FR-47): автор жирным, передающий в скобках.
+
+    escape — экранирование имён для Markdown; по умолчанию имена не меняются.
+    """
+    line = f"**{escape(scorer_name)}**"
+    if assist_name:
+        line += f" ({escape(assist_name)})"
+    return line
 
 
 def get_result(conn, actor, event_id):

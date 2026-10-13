@@ -23,6 +23,9 @@ PLAYERS = [
     {"name": "Игрок Третий", "login": "igrok3", "password": "igrok3-demo", "number": 1, "position": "вратарь"},
 ]
 PLAYED_GAME_TITLE = "Сыгранная игра с командой «Прошлый соперник»"
+# Соперники вымышленные (ТБ-5).
+PLAYED_GAME_OPPONENT = "Прошлый соперник"
+FUTURE_GAME_OPPONENT = "Тестовые ястребы"
 
 
 def add_played_game(conn, org, first_id, second_id):
@@ -36,7 +39,7 @@ def add_played_game(conn, org, first_id, second_id):
     week_ago = datetime.combine(today - timedelta(days=7), time(12, 0))
     game = events.create_event(
         conn, org, "game", PLAYED_GAME_TITLE, today - timedelta(days=3), time(19, 30),
-        "Стадион", gather_time=time(18, 45), now=week_ago,
+        "Стадион", gather_time=time(18, 45), now=week_ago, opponent=PLAYED_GAME_OPPONENT,
     )
     squads.save_squad(conn, org, game, [first_id, second_id], now=week_ago)
     squads.publish_squad(conn, org, game, now=week_ago)
@@ -118,8 +121,8 @@ def main():
         "База отдыха", gather_time=time(9, 30),
     )
     game = events.create_event(
-        conn, org, "game", "Игра с командой «Соперник»", today + timedelta(days=5), time(19, 30),
-        "Стадион", gather_time=time(18, 45),
+        conn, org, "game", f"Игра с командой «{FUTURE_GAME_OPPONENT}»", today + timedelta(days=5),
+        time(19, 30), "Стадион", gather_time=time(18, 45), opponent=FUTURE_GAME_OPPONENT,
     )
     squads.save_squad(conn, org, game, [ids[0], ids[1]])
     squads.publish_squad(conn, org, game)
