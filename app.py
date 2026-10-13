@@ -33,6 +33,14 @@ PAGE_TITLE = "ХК Иркутский Политех — TeamPlan"
 LOGO = Path(__file__).parent / "assets" / "logo.png"
 TYPE_ICONS = {"training": "⛸️", "game": "🏒", "activity": "👥"}
 CANCELLED_MARK = "🚫 Отменено"
+# Статус для показа (FR-48): значок в таблицах и цвет значка в карточках.
+STATUS_ICONS = {
+    "planned": "🕒", "past": "☑️", "played": "🏁", "no_score": "⚠️", "cancelled": "🚫",
+}
+STATUS_COLORS = {
+    "planned": "green", "past": "gray", "played": "violet", "no_score": "orange",
+    "cancelled": "red",
+}
 CANCELLED_TEXT_COLOR = "#5B6275"  # серый, контраст на белом 6.1:1
 # Цвета статусов явки: «буду» — зелёный, «под вопросом» — жёлтый, «не буду» — красный.
 ATTENDANCE_COLORS = {"yes": "green", "maybe": "yellow", "no": "red", "none": "gray"}
@@ -91,14 +99,19 @@ def type_text(ev):
 
 
 def status_text(ev):
-    return CANCELLED_MARK if ev["status"] == "cancelled" else ev["status_label"]
+    """Статус для показа со значком (FR-48)."""
+    return f"{STATUS_ICONS[ev['display_status']]} {ev['display_status_label']}"
 
 
-def event_badges(ev):
-    """Значки типа и статуса события в виде Markdown."""
-    if ev["status"] == "cancelled":
-        return f":gray-badge[{type_text(ev)}] :red-badge[{CANCELLED_MARK}]"
-    return f":blue-badge[{type_text(ev)}] :green-badge[{ev['status_label']}]"
+def event_badges(ev, compact=False):
+    """Значки типа и статуса события в виде Markdown.
+
+    compact — статус без значка, чтобы он помещался в узкой карточке.
+    """
+    type_color = "gray" if ev["status"] == "cancelled" else "blue"
+    status_color = STATUS_COLORS[ev["display_status"]]
+    status = ev["display_status_label"] if compact else status_text(ev)
+    return f":{type_color}-badge[{type_text(ev)}] :{status_color}-badge[{status}]"
 
 
 def attendance_text(key):
@@ -310,7 +323,7 @@ def show_upcoming(evs):
     for col, ev in zip(cols, upcoming):
         cancelled = ev["status"] == "cancelled"
         with col.container(border=True, height="stretch"):
-            st.markdown(event_badges(ev))
+            st.markdown(event_badges(ev, compact=True))
             title = md(ev["title"])
             st.markdown(f":gray[~~{title}~~]" if cancelled else f"**{title}**")
             day = to_date(ev["date"])

@@ -35,13 +35,13 @@ def filter_by_type(evs, event_type):
     return [e for e in evs if e["type"] == event_type]
 
 
-def games_table(conn, actor):
+def games_table(conn, actor, now=None):
     """Игры по дате и времени со счётом и итогом (FR-43, FR-44).
 
     К каждому событию добавляются our_score, their_score (None без результата),
     score — текст счёта и outcome — итог или прочерк.
     """
-    evs = filter_by_type(events.list_events(conn, actor), "game")
+    evs = filter_by_type(events.list_events(conn, actor, now), "game")
     scores = {
         r["event_id"]: (r["our_score"], r["their_score"])
         for r in conn.execute("SELECT event_id, our_score, their_score FROM results")
@@ -69,7 +69,7 @@ def attendance_counts(marks, player_ids):
     return counts
 
 
-def attendance_table(conn, actor, event_type):
+def attendance_table(conn, actor, event_type, now=None):
     """Тренировки или мероприятия по дате и времени со сводкой явки (FR-43, FR-45).
 
     К каждому событию добавляется counts — словарь с ключами yes, maybe, no, none.
@@ -77,7 +77,7 @@ def attendance_table(conn, actor, event_type):
     auth.require_actor(conn, actor)
     if event_type == "game":
         raise ServiceError("Для игры сводка явки не строится.")
-    evs = filter_by_type(events.list_events(conn, actor), event_type)
+    evs = filter_by_type(events.list_events(conn, actor, now), event_type)
     player_ids = [r["id"] for r in conn.execute("SELECT id FROM players")]
     marks = {}
     for r in conn.execute("SELECT event_id, player_id, status FROM attendance"):
