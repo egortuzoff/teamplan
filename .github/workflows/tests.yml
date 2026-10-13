@@ -1,10 +1,11 @@
 # Автоматическая проверка TeamPlan.
-# Запускается при каждой отправке изменений в любую ветку, при каждом
-# pull request и вручную (вкладка Actions → «Тесты» → Run workflow).
+# Запускается при каждом pull request, при изменениях в main
+# и вручную (вкладка Actions → «Тесты» → Run workflow).
 name: Тесты
 
 on:
   push:
+    branches: [main]
   pull_request:
   workflow_dispatch:
 
