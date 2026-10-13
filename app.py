@@ -1,4 +1,4 @@
-"""TeamPlan: расписание, явка, составы и результаты команды (этап 2, ТЗ TP-TZ-001 версии 0.3).
+"""TeamPlan: расписание, явка, составы и результаты команды (ТЗ TP-TZ-001 версии 0.4).
 
 Запуск: streamlit run app.py
 Вся логика и проверка прав находятся в пакете teamplan; здесь только экраны.
@@ -10,7 +10,9 @@ from pathlib import Path
 import pandas as pd
 import streamlit as st
 
-from teamplan import attendance, auth, events, notifications, players, results, squads
+from teamplan import (
+    attendance, auth, events, notifications, players, results, squads, summary,
+)
 from teamplan.common import DATE_FMT, DATETIME_FMT, TIME_FMT, format_date, format_datetime
 from teamplan.db import connect
 from teamplan.errors import ServiceError
@@ -182,9 +184,15 @@ def show_schedule(conn, actor):
         st.info("Событий нет." + hint)
         return
     show_upcoming(evs)
-    st.subheader("Все события")
-    table = pd.DataFrame(
-        [
+    ids = [e["id"] for e in evs]
+    by_id = {e["id"]: e for e in evs}
+    # Вкладки по типам событий (FR-43); выбор строки открывает карточку (FR-46).
+    # Ключ сохраняет выбранную вкладку при перезапуске страницы.
+    tab_all, tab_games, tab_trainings, tab_activities = st.tabs(
+        ["Все", "Игры", "Тренировки", "Мероприятия"], key="schedule_tab", on_change="rerun",
+    )
+    with tab_all:
+        schedule_table("all", evs, [
             {
                 "Дата": format_date(e["date"]),
                 "Время": e["time"],
@@ -195,28 +203,32 @@ def show_schedule(conn, actor):
                 "Статус": status_text(e),
             }
             for e in evs
-        ]
-    )
-    cancelled = [e["status"] == "cancelled" for e in evs]
-    # Отменённые события в таблице — серым текстом.
-    styled = table.style.apply(
-        lambda row: [
-            f"color: {CANCELLED_TEXT_COLOR}" if cancelled[row.name] else ""
-        ] * len(row),
-        axis=1,
-    )
-    st.dataframe(
-        styled, hide_index=True,
-        column_config={
-            **{
-                name: st.column_config.TextColumn(width="small")
-                for name in ("Дата", "Время", "Время сбора")
-            },
-            "Название": st.column_config.TextColumn(width="medium"),
-        },
-    )
-    ids = [e["id"] for e in evs]
-    by_id = {e["id"]: e for e in evs}
+        ])
+    with tab_games:
+        games = summary.games_table(conn, actor)
+        schedule_table("game", games, [
+            {
+                **event_columns(g),
+                "Счёт": g["score"],
+                "Итог": g["outcome"],
+                "Статус": status_text(g),
+            }
+            for g in games
+        ])
+    for tab, event_type in ((tab_trainings, "training"), (tab_activities, "activity")):
+        with tab:
+            items = summary.attendance_table(conn, actor, event_type)
+            schedule_table(event_type, items, [
+                {
+                    **event_columns(e),
+                    **{
+                        attendance_text(key): e["counts"][key]
+                        for key in ("yes", "maybe", "no", "none")
+                    },
+                    "Статус": status_text(e),
+                }
+                for e in items
+            ])
     if "goto_event" in st.session_state:
         st.session_state["event_select"] = st.session_state.pop("goto_event")
     if st.session_state.get("event_select") not in ids:
@@ -228,6 +240,58 @@ def show_schedule(conn, actor):
         format_func=lambda i: event_label(by_id[i]),
     )
     show_event_card(conn, actor, by_id[event_id])
+
+
+def event_columns(ev):
+    """Общие колонки таблиц игр, тренировок и мероприятий (FR-44, FR-45)."""
+    return {
+        "Дата": format_date(ev["date"]),
+        "Время": ev["time"],
+        "Время сбора": ev["gather_time"] or "",
+        "Название": ev["title"],
+        "Место": ev["place"] or "",
+    }
+
+
+def schedule_table(name, evs, rows):
+    """Таблица вкладки расписания с выбором строки (FR-46)."""
+    if not rows:
+        st.info("Событий этого типа нет.")
+        return
+    table = pd.DataFrame(rows)
+    cancelled = [e["status"] == "cancelled" for e in evs]
+    # Отменённые события в таблице — серым текстом.
+    styled = table.style.apply(
+        lambda row: [
+            f"color: {CANCELLED_TEXT_COLOR}" if cancelled[row.name] else ""
+        ] * len(row),
+        axis=1,
+    )
+    key = f"schedule_table_{name}"
+    ids = [e["id"] for e in evs]
+    st.dataframe(
+        styled, hide_index=True, key=key,
+        on_select=lambda: select_row(key, ids), selection_mode="single-row",
+        column_config={
+            **{
+                col: st.column_config.TextColumn(width="small")
+                for col in ("Дата", "Время", "Время сбора", "Счёт", "Итог")
+            },
+            **{
+                attendance_text(key): st.column_config.NumberColumn(width="small")
+                for key in ("yes", "maybe", "no", "none")
+            },
+            "Название": st.column_config.TextColumn(width="medium"),
+        },
+    )
+    st.caption("Выберите строку, чтобы открыть карточку события.")
+
+
+def select_row(key, ids):
+    """Открывает событие выбранной строки (вызывается до отрисовки списка событий)."""
+    rows = st.session_state[key].selection.rows
+    if rows:
+        open_event(ids[rows[0]])
 
 
 def open_event(event_id):
