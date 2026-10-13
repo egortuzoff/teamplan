@@ -1,0 +1,84 @@
+# Автоматическая проверка TeamPlan.
+# Запускается при каждом pull request, при изменениях в main
+# и вручную (вкладка Actions → «Тесты» → Run workflow).
+name: Тесты
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: tests-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  pytest:
+    name: pytest (Python ${{ matrix.python-version }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        # ТП-1: без Docker поддерживаются Python 3.12 и 3.13.
+        python-version: ["3.12", "3.13"]
+    env:
+      # Тот же часовой пояс, что и в docker-compose.yml: от него зависят
+      # правила «событие началось» и «срок в прошлом».
+      TZ: Europe/Moscow
+    steps:
+      - name: Получить код
+        uses: actions/checkout@v4
+
+      - name: Установить Python ${{ matrix.python-version }}
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+          cache: pip
+          cache-dependency-path: requirements.txt
+
+      - name: Установить зависимости
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r requirements.txt
+
+      - name: Запустить тесты
+        run: python -m pytest -v
+
+  docker:
+    name: Docker (сборка и запуск)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Получить код
+        uses: actions/checkout@v4
+
+      - name: Собрать образ
+        run: docker build -t teamplan .
+
+      - name: Запустить контейнер и проверить, что приложение отвечает
+        run: |
+          docker run -d --name teamplan -p 8501:8501 -e TZ=Europe/Moscow teamplan
+          for i in $(seq 1 30); do
+            if curl -fsS http://localhost:8501/_stcore/health; then
+              echo
+              echo "Приложение запустилось."
+              exit 0
+            fi
+            sleep 2
+          done
+          echo "Приложение не ответило за 60 секунд. Журнал контейнера:"
+          docker logs teamplan
+          exit 1
+
+      - name: Журнал контейнера
+        if: always()
+        run: docker logs teamplan || true
+
+      - name: Остановить контейнер
+        if: always()
+        run: docker rm -f teamplan || true
