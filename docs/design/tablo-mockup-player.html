@@ -1,0 +1,118 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<!-- Макет TeamPlan, направление «Табло». Ориентир для оформления, не код приложения. -->
+<title>Табло — первый экран игрока</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Oswald:wght@500;600;700&amp;family=Golos+Text:wght@400;500;600&amp;family=JetBrains+Mono:wght@500;700&amp;display=swap">
+<style>
+body{margin:0;background:#0A1428}
+a{color:#9FD3FF}a:hover{color:#FFFFFF}
+</style>
+</head>
+<body>
+<div style="min-height: 100vh; background: #0A1428; color: #EAF1FB; font-family: 'Golos Text', system-ui, sans-serif; font-size: 16px; line-height: 1.5">
+
+<header style="display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 16px 32px; padding: 18px 40px; border-bottom: 1px solid #1E2C4A">
+<div style="display: flex; align-items: center; gap: 14px">
+<div style="width: 44px; height: 44px; border-radius: 50%; border: 2px solid #7CC4FF; display: flex; align-items: center; justify-content: center; font-family: 'Oswald', sans-serif; font-weight: 600; font-size: 16px; color: #7CC4FF">ИП</div>
+<div style="font-family: 'Oswald', sans-serif; font-weight: 600; font-size: 20px; letter-spacing: 0.06em; text-transform: uppercase">ХК «Иркутский Политех»</div>
+</div>
+<nav aria-label="Разделы" style="display: flex; flex-wrap: wrap; gap: 4px">
+<a href="#" style="display: inline-flex; align-items: center; min-height: 44px; padding: 0 16px; text-decoration: none; color: #FFFFFF; font-weight: 600; border-bottom: 2px solid #7CC4FF">Расписание</a>
+<a href="#" style="display: inline-flex; align-items: center; min-height: 44px; padding: 0 16px; text-decoration: none; color: #B7C6DE">Статистика</a>
+<a href="#" style="display: inline-flex; align-items: center; gap: 8px; min-height: 44px; padding: 0 16px; text-decoration: none; color: #B7C6DE">Уведомления <span style="min-width: 22px; height: 22px; border-radius: 11px; background: #FFB020; color: #0A1428; font-size: 12px; font-weight: 700; display: inline-flex; align-items: center; justify-content: center">2</span></a>
+</nav>
+<div style="display: flex; align-items: center; gap: 16px">
+<div style="text-align: right; line-height: 1.3"><div style="font-weight: 600">Игрок Первый</div><div style="font-size: 13px; color: #9AAACB">№10 · нападающий</div></div>
+<button type="button" style="min-height: 44px; padding: 0 18px; border-radius: 8px; border: 1px solid #2D3F63; background: transparent; color: #EAF1FB; font: inherit; cursor: pointer">Выйти</button>
+</div>
+</header>
+
+<main style="max-width: 1360px; margin: 0 auto; padding: 40px 40px 56px; display: flex; flex-direction: column; gap: 40px">
+
+<section style="display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 420px), 1fr)); gap: 24px">
+<div style="padding: 36px; border-radius: 16px; background: #101E3A; border: 1px solid #1E2C4A; display: flex; flex-direction: column; gap: 20px">
+<div style="font-family: 'JetBrains Mono', monospace; font-size: 13px; letter-spacing: 0.12em; color: #7CC4FF">СЛЕДУЮЩЕЕ СОБЫТИЕ · ЧЕРЕЗ 3 ДНЯ</div>
+<div style="display: flex; flex-wrap: wrap; align-items: baseline; gap: 8px 24px">
+<div style="font-family: 'Oswald', sans-serif; font-weight: 700; font-size: 96px; line-height: 0.95; letter-spacing: 0.01em; text-transform: uppercase">Игра</div>
+<div style="font-family: 'Oswald', sans-serif; font-weight: 500; font-size: 40px; line-height: 1; color: #B7C6DE">ПТ 17.10 · 19:30</div>
+</div>
+<div style="font-size: 20px">против <b>«Тестовые ястребы»</b></div>
+<div style="display: flex; flex-wrap: wrap; gap: 10px">
+<span style="padding: 6px 12px; border-radius: 6px; background: #17294D; font-size: 14px">Сбор 18:45</span>
+<span style="padding: 6px 12px; border-radius: 6px; background: #17294D; font-size: 14px">Стадион</span>
+<span style="padding: 6px 12px; border-radius: 6px; background: #12422E; color: #8BF0B7; font-size: 14px; font-weight: 600">Вы в составе</span>
+</div>
+<div style="display: flex; flex-wrap: wrap; gap: 12px; margin-top: 4px">
+<a href="#" style="display: inline-flex; align-items: center; min-height: 48px; padding: 0 24px; border-radius: 8px; background: #7CC4FF; color: #0A1428; text-decoration: none; font-weight: 600">Открыть состав</a>
+<a href="#" style="display: inline-flex; align-items: center; min-height: 48px; padding: 0 24px; border-radius: 8px; border: 1px solid #2D3F63; color: #EAF1FB; text-decoration: none">Всё расписание</a>
+</div>
+</div>
+
+<div style="padding: 36px; border-radius: 16px; background: #0E1A33; border: 1px solid #1E2C4A; display: flex; flex-direction: column; justify-content: space-between; gap: 24px">
+<div style="display: flex; justify-content: space-between; align-items: center; gap: 12px">
+<div style="font-family: 'JetBrains Mono', monospace; font-size: 13px; letter-spacing: 0.12em; color: #7CC4FF">ПОСЛЕДНИЙ МАТЧ · 07.10</div>
+<span style="padding: 4px 12px; border-radius: 999px; background: #12422E; color: #8BF0B7; font-size: 13px; font-weight: 600">Победа</span>
+</div>
+<div style="display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); align-items: center; gap: 12px; text-align: center">
+<div style="font-family: 'Oswald', sans-serif; font-weight: 600; font-size: 22px; text-transform: uppercase; line-height: 1.15">ХК «Иркутский Политех»</div>
+<div style="font-family: 'JetBrains Mono', monospace; font-weight: 700; font-size: 88px; line-height: 1; color: #FFFFFF; white-space: nowrap">2:1</div>
+<div style="font-family: 'Oswald', sans-serif; font-weight: 600; font-size: 22px; text-transform: uppercase; line-height: 1.15; color: #B7C6DE">Прошлый соперник</div>
+</div>
+<div style="font-size: 15px; color: #B7C6DE; border-top: 1px solid #1E2C4A; padding-top: 16px">Голы: <b style="color: #FFFFFF">Игрок Первый</b> (Игрок Второй), <b style="color: #FFFFFF">Игрок Первый</b></div>
+</div>
+</section>
+
+<section style="display: flex; flex-direction: column; gap: 16px">
+<div style="display: flex; justify-content: space-between; align-items: baseline; gap: 12px; flex-wrap: wrap">
+<h2 style="margin: 0; font-family: 'Oswald', sans-serif; font-weight: 600; font-size: 28px; letter-spacing: 0.04em; text-transform: uppercase">На этой неделе</h2>
+<a href="#" style="font-size: 15px">Все события</a>
+</div>
+<div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 300px), 1fr)); gap: 16px">
+
+<article style="padding: 24px; border-radius: 12px; background: #101E3A; border: 1px solid #1E2C4A; display: flex; flex-direction: column; gap: 14px">
+<div style="display: flex; align-items: center; gap: 10px; font-family: 'JetBrains Mono', monospace; font-size: 13px; letter-spacing: 0.1em; color: #7CC4FF"><svg aria-hidden="true" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M6 4v16M18 4v16M3 8h6M15 8h6M3 16h6M15 16h6"></path></svg>ТРЕНИРОВКА</div>
+<div style="font-family: 'Oswald', sans-serif; font-weight: 600; font-size: 34px; line-height: 1">ЧТ 16.10 · 19:00</div>
+<div style="font-size: 15px; color: #B7C6DE">Основной зал · сбор 18:30 · ответить до 15.10, 18:00</div>
+<div role="group" aria-label="Моя явка" style="display: flex; flex-wrap: wrap; gap: 8px">
+<button type="button" aria-pressed="true" style="min-height: 44px; padding: 0 16px; border-radius: 8px; border: 1px solid #3DDC84; background: #12422E; color: #8BF0B7; font: inherit; font-weight: 600; cursor: pointer">Буду</button>
+<button type="button" aria-pressed="false" style="min-height: 44px; padding: 0 16px; border-radius: 8px; border: 1px solid #2D3F63; background: transparent; color: #EAF1FB; font: inherit; cursor: pointer">Под вопросом</button>
+<button type="button" aria-pressed="false" style="min-height: 44px; padding: 0 16px; border-radius: 8px; border: 1px solid #2D3F63; background: transparent; color: #EAF1FB; font: inherit; cursor: pointer">Не буду</button>
+</div>
+</article>
+
+<article style="padding: 24px; border-radius: 12px; background: #101E3A; border: 1px solid #2B4A7A; display: flex; flex-direction: column; gap: 14px">
+<div style="display: flex; align-items: center; gap: 10px; font-family: 'JetBrains Mono', monospace; font-size: 13px; letter-spacing: 0.1em; color: #7CC4FF"><svg aria-hidden="true" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 20l9-14M20 20l-9-14"></path><circle cx="12" cy="19" r="1.5"></circle></svg>ИГРА</div>
+<div style="font-family: 'Oswald', sans-serif; font-weight: 600; font-size: 34px; line-height: 1">ПТ 17.10 · 19:30</div>
+<div style="font-size: 15px; color: #B7C6DE">«Тестовые ястребы» · Стадион · сбор 18:45</div>
+<div style="display: flex; align-items: center; gap: 8px; min-height: 44px; font-weight: 600; color: #8BF0B7"><svg aria-hidden="true" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12l5 5L20 7"></path></svg>Состав опубликован, вы в нём</div>
+</article>
+
+<article style="padding: 24px; border-radius: 12px; background: #101E3A; border: 1px solid #1E2C4A; display: flex; flex-direction: column; gap: 14px">
+<div style="display: flex; align-items: center; gap: 10px; font-family: 'JetBrains Mono', monospace; font-size: 13px; letter-spacing: 0.1em; color: #7CC4FF"><svg aria-hidden="true" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="9" cy="8" r="3"></circle><circle cx="17" cy="9" r="2.5"></circle><path d="M3 20c0-3.3 2.7-6 6-6s6 2.7 6 6M15 15c3 0 6 2 6 5"></path></svg>МЕРОПРИЯТИЕ</div>
+<div style="font-family: 'Oswald', sans-serif; font-weight: 600; font-size: 34px; line-height: 1">ВС 19.10 · 10:00</div>
+<div style="font-size: 15px; color: #B7C6DE">Выезд на базу отдыха · сбор 09:30</div>
+<div role="group" aria-label="Моя явка" style="display: flex; flex-wrap: wrap; gap: 8px">
+<button type="button" aria-pressed="false" style="min-height: 44px; padding: 0 16px; border-radius: 8px; border: 1px solid #2D3F63; background: transparent; color: #EAF1FB; font: inherit; cursor: pointer">Буду</button>
+<button type="button" aria-pressed="false" style="min-height: 44px; padding: 0 16px; border-radius: 8px; border: 1px solid #2D3F63; background: transparent; color: #EAF1FB; font: inherit; cursor: pointer">Под вопросом</button>
+<button type="button" aria-pressed="false" style="min-height: 44px; padding: 0 16px; border-radius: 8px; border: 1px solid #2D3F63; background: transparent; color: #EAF1FB; font: inherit; cursor: pointer">Не буду</button>
+</div>
+</article>
+
+</div>
+</section>
+
+<section style="display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 200px), 1fr)); gap: 16px; padding: 28px 32px; border-radius: 16px; background: #101E3A; border: 1px solid #1E2C4A; align-items: end">
+<div style="font-family: 'Oswald', sans-serif; font-weight: 600; font-size: 28px; letter-spacing: 0.04em; text-transform: uppercase; line-height: 1.1">Моя<br>статистика</div>
+<div><div style="font-family: 'JetBrains Mono', monospace; font-weight: 700; font-size: 56px; line-height: 1">1</div><div style="color: #B7C6DE; font-size: 15px">игр</div></div>
+<div><div style="font-family: 'JetBrains Mono', monospace; font-weight: 700; font-size: 56px; line-height: 1; color: #7CC4FF">2</div><div style="color: #B7C6DE; font-size: 15px">гола</div></div>
+<div><div style="font-family: 'JetBrains Mono', monospace; font-weight: 700; font-size: 56px; line-height: 1">0</div><div style="color: #B7C6DE; font-size: 15px">передач</div></div>
+</section>
+
+</main>
+</div>
+</body>
+</html>

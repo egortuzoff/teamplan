@@ -4,7 +4,7 @@ import sys
 import pytest
 
 import seed
-from teamplan import auth, events, notifications, results
+from teamplan import auth, events, home, notifications, results
 from teamplan.db import connect
 
 
@@ -32,8 +32,10 @@ def test_seed_creates_played_game_and_stats_match_manual_count(db_path):
         # У обеих игр вымышленные соперники (ТБ-5).
         assert game["opponent"] == seed.PLAYED_GAME_OPPONENT
         future = [e for e in events.list_events(conn, player)
-                  if e["type"] == "game" and e["id"] != game["id"]]
-        assert [e["opponent"] for e in future] == [seed.FUTURE_GAME_OPPONENT]
+                  if e["type"] == "game" and not events.is_started(e)]
+        assert [e["opponent"] for e in future] == [
+            seed.FUTURE_GAME_OPPONENT, seed.DRAFT_GAME_OPPONENT,
+        ]
         assert result["warning"] is None
         # Ручной подсчёт: оба гола у Игрока Первого, одна передача у Игрока Второго.
         # Будущая игра без счёта в «игры» не входит.
@@ -45,10 +47,58 @@ def test_seed_creates_played_game_and_stats_match_manual_count(db_path):
             "Игрок Третий": (0, 0, 0),
         }
         types = sorted(e["type"] for e in events.list_events(conn, player))
-        assert types == ["activity", "game", "game", "training"]
+        assert types == ["activity", "game", "game", "game", "game", "training"]
         first = auth.login(conn, "igrok1", "igrok1-demo")
         assert notifications.unread_count(conn, first) > 0
         assert notifications.unread_count(conn, player) == 0  # не в составах
+    finally:
+        conn.close()
+
+
+def test_seed_data_for_home_screens(db_path):
+    """Тестовые данные для проверки главного экрана (AC-19)."""
+    seed.main()
+    conn = connect(db_path)
+    try:
+        first = auth.login(conn, "igrok1", "igrok1-demo")
+        data = home.player_home(conn, first)
+        assert data["next_event"] is not None
+        last = data["last_match"]
+        assert (last["our_score"], last["their_score"], last["outcome"]) == (2, 1, "Победа")
+        assert data["stats"] == {"games": 1, "goals": 2, "assists": 0}
+        week_types = [e["type"] for e in data["week"]]
+        assert week_types == ["training", "game"]
+        assert data["week"][0]["my_mark"] == "yes"
+        assert data["week"][1]["in_squad"] is True
+
+        org = auth.login(conn, "trener", "trener-demo-1")
+        data = home.organizer_home(conn, org)
+        assert data["needs_action"]["title"] == seed.DRAFT_GAME_TITLE
+        assert data["needs_action"]["squad_state"] == "draft"
+        assert [g["title"] for g in data["no_score"]] == [seed.NO_SCORE_GAME_TITLE]
+        assert [e["type"] for e in data["week_attendance"]] == ["training"]
+        assert data["week_attendance"][0]["counts"] == {"yes": 1, "maybe": 0, "no": 0, "none": 2}
+    finally:
+        conn.close()
+
+
+def test_seed_tops_up_previous_version_with_home_games(db_path, monkeypatch):
+    with monkeypatch.context() as m:  # база версии 0.6: без игр для главного экрана
+        m.setattr(seed, "add_draft_game", lambda *args: None)
+        m.setattr(seed, "add_no_score_game", lambda *args: None)
+        seed.main()
+    conn = connect(db_path)
+    org = auth.login(conn, "trener", "trener-demo-1")
+    before = len(events.list_events(conn, org))
+    conn.close()
+
+    seed.main()
+    seed.main()  # повторный запуск ничего не добавляет
+    conn = connect(db_path)
+    try:
+        titles = [e["title"] for e in events.list_events(conn, org)]
+        assert len(titles) == before + 2
+        assert seed.DRAFT_GAME_TITLE in titles and seed.NO_SCORE_GAME_TITLE in titles
     finally:
         conn.close()
 
