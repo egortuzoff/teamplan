@@ -1,4 +1,4 @@
-"""TeamPlan: расписание, явка, составы и результаты команды (ТЗ TP-TZ-001 версии 0.6).
+"""TeamPlan: расписание, явка, составы и результаты команды (ТЗ TP-TZ-001 версии 0.7).
 
 Запуск: streamlit run app.py
 Вся логика и проверка прав находятся в пакете teamplan; здесь только экраны.
@@ -9,9 +9,10 @@ from pathlib import Path
 
 import pandas as pd
 import streamlit as st
+import streamlit.components.v1 as components
 
 from teamplan import (
-    attendance, auth, events, notifications, players, results, squads, summary,
+    attendance, auth, events, home, notifications, players, results, squads, summary, tablo,
 )
 from teamplan.common import DATE_FMT, DATETIME_FMT, TIME_FMT, format_date, format_datetime
 from teamplan.db import connect
@@ -28,7 +29,8 @@ PAGE_PLAYERS = "Игроки"
 
 TYPE_OPTIONS = list(events.EVENT_TYPES)
 
-# Оформление в цветах команды. Сами цвета темы — в .streamlit/config.toml,
+# Оформление «Табло» (НТ-7). Цвета темы и шрифты — в .streamlit/config.toml,
+# дополнительные цвета и HTML-блоки главного экрана — в teamplan/tablo.py,
 # название команды — в teamplan/settings.py.
 PAGE_TITLE = TEAM_NAME.replace("«", "").replace("»", "") + " — TeamPlan"
 LOGO = Path(__file__).parent / "assets" / "logo.png"
@@ -42,14 +44,54 @@ STATUS_COLORS = {
     "planned": "green", "past": "gray", "played": "violet", "no_score": "orange",
     "cancelled": "red",
 }
-CANCELLED_TEXT_COLOR = "#5B6275"  # серый, контраст на белом 6.1:1
+CANCELLED_TEXT_COLOR = tablo.DIM  # приглушённый, контраст на тёмном фоне 7.9:1
 # Цвета статусов явки: «буду» — зелёный, «под вопросом» — жёлтый, «не буду» — красный.
 ATTENDANCE_COLORS = {"yes": "green", "maybe": "yellow", "no": "red", "none": "gray"}
 ATTENDANCE_DOTS = {"yes": "🟢", "maybe": "🟡", "no": "🔴", "none": "⚪"}
 NO_ANSWER_LABEL = "Не ответили"
-WEEKDAYS = ["пн", "вт", "ср", "чт", "пт", "сб", "вс"]
-UPCOMING_CARDS = 4
 MD_SPECIAL = set("\\`*_{}[]<>()#+-.!|~:$")
+NEW_EVENT_BUTTONS = [
+    ("training", "+ Тренировка"), ("game", "+ Игра"), ("activity", "+ Мероприятие"),
+]
+# Страницы меню (st.Page) текущего запуска: для переходов из кода (st.switch_page).
+PAGES = {}
+
+# Оформление карточек главного экрана и кнопок. Карточки — контейнеры с ключом
+# tpcard_… (обычные) и tpwarn_… (янтарная рамка «требует действия»).
+TABLO_CSS = f"""
+[data-testid="stMainBlockContainer"] {{ max-width: 1360px; padding-top: 4.5rem; }}
+[class*="st-key-tpcard_"], [class*="st-key-tpwarn_"] {{
+  background: {tablo.BG2}; border: 1px solid {tablo.BORDER}; border-radius: 16px;
+  padding: 28px; gap: 18px;
+}}
+[class*="st-key-tpwarn_"] {{ border-color: {tablo.AMBER}; }}
+[class*="st-key-tpgrid_"] {{ align-items: stretch; }}
+[class*="st-key-tpgrid_"] > div {{
+  flex: 1 1 300px; min-width: min(100%, 300px); max-width: calc((100% - 2rem) / 3);
+}}
+[class*="st-key-tpgrid_"] > div > [class*="st-key-tpcard_"] {{ height: 100%; }}
+@media (max-width: 720px) {{
+  [class*="st-key-tpgrid_"] > div {{ max-width: 100%; flex-basis: 100%; }}
+}}
+.st-key-tp_event_card, .st-key-tp_schedule {{ scroll-margin-top: 80px; }}
+[data-testid="stBaseButton-primary"] {{ color: {tablo.BG}; }}
+[data-testid="stBaseButton-primary"] p {{ font-weight: 600; }}
+[data-testid="stBaseButton-secondary"] {{ border-color: {tablo.BUTTON_BORDER}; min-height: 44px; }}
+[class*="st-key-home_att_"][class*="_on"] button {{
+  background: {tablo.CHIP}; border-color: {tablo.TEXT};
+}}
+[class*="st-key-home_att_"][class*="_yes_on"] button {{
+  background: {tablo.GREEN_BG}; border-color: {tablo.GREEN_BORDER}; color: {tablo.GREEN_TEXT};
+}}
+[class*="st-key-home_att_"][class*="_on"] button p {{ font-weight: 600; }}
+[class*="st-key-home_new_"] button {{ min-height: 64px; background: {tablo.CHIP}; }}
+[class*="st-key-home_new_"] button p {{
+  font-family: 'Oswald', sans-serif; font-weight: 600; font-size: 20px;
+  letter-spacing: .04em; text-transform: uppercase;
+}}
+[class*="st-key-home_score_"] button {{ border-color: {tablo.AMBER}; color: {tablo.AMBER_TEXT}; }}
+[class*="st-key-home_score_"] button p {{ font-weight: 600; }}
+"""
 
 
 # ---------- вспомогательные функции ----------
@@ -104,15 +146,11 @@ def status_text(ev):
     return f"{STATUS_ICONS[ev['display_status']]} {ev['display_status_label']}"
 
 
-def event_badges(ev, compact=False):
-    """Значки типа и статуса события в виде Markdown.
-
-    compact — статус без значка, чтобы он помещался в узкой карточке.
-    """
+def event_badges(ev):
+    """Значки типа и статуса события в виде Markdown."""
     type_color = "gray" if ev["status"] == "cancelled" else "blue"
     status_color = STATUS_COLORS[ev["display_status"]]
-    status = ev["display_status_label"] if compact else status_text(ev)
-    return f":{type_color}-badge[{type_text(ev)}] :{status_color}-badge[{status}]"
+    return f":{type_color}-badge[{type_text(ev)}] :{status_color}-badge[{status_text(ev)}]"
 
 
 def attendance_text(key):
@@ -162,42 +200,101 @@ def show_login(conn):
         st.rerun()
 
 
-def show_sidebar(conn, actor):
-    st.logo(str(LOGO), size="large")
-    st.sidebar.markdown(f"### {TEAM_NAME}")
-    st.sidebar.caption("TeamPlan — расписание команды")
-    st.sidebar.divider()
-    st.sidebar.markdown(f"**{actor.name}**")
-    st.sidebar.caption(auth.ROLE_LABELS[actor.role])
-    pages = [PAGE_SCHEDULE, PAGE_STATS, PAGE_NOTIFICATIONS]
-    if actor.is_organizer:
-        pages += [PAGE_NEW_EVENT, PAGE_PLAYERS]
+def build_pages(conn, actor):
+    """Разделы меню сверху (НТ-7). Организатору доступны ещё «Новое событие» и «Игроки»."""
     unread = notifications.unread_count(conn, actor)
-    # Переход на другую страницу из кода: значение задаём до создания переключателя.
-    if "goto_page" in st.session_state:
-        st.session_state["page"] = st.session_state.pop("goto_page")
-    if st.session_state.get("page") not in pages:
-        st.session_state["page"] = pages[0]
-    page = st.sidebar.radio(
-        "Раздел", pages, key="page",
-        format_func=lambda p: f"{p} ({unread})" if p == PAGE_NOTIFICATIONS and unread else p,
+    notif_title = f"{PAGE_NOTIFICATIONS} ({unread})" if unread else PAGE_NOTIFICATIONS
+    items = [(PAGE_SCHEDULE, "schedule", show_schedule)]
+    if actor.is_organizer:
+        items += [(PAGE_NEW_EVENT, "new-event", show_new_event),
+                  (PAGE_PLAYERS, "players", show_players)]
+    items += [(PAGE_STATS, "stats", show_stats),
+              (PAGE_NOTIFICATIONS, "notifications", show_notifications)]
+    return {
+        name: st.Page(
+            lambda show=show: show(conn, actor),
+            title=notif_title if name == PAGE_NOTIFICATIONS else name,
+            url_path=url, default=name == PAGE_SCHEDULE,
+        )
+        for name, url, show in items
+    }
+
+
+def user_subtitle(conn, actor):
+    """Подпись под именем: номер и позиция игрока или роль."""
+    if actor.is_organizer or actor.player_id is None:
+        return auth.ROLE_LABELS[actor.role]
+    me = next((p for p in players.list_players(conn, actor) if p["id"] == actor.player_id), None)
+    parts = []
+    if me and me["number"] is not None:
+        parts.append(f"№{me['number']}")
+    if me and me["position"]:
+        parts.append(me["position"])
+    return " · ".join(parts) or auth.ROLE_LABELS[actor.role]
+
+
+def show_header(conn, actor):
+    """Название команды слева, имя пользователя и «Выйти» справа."""
+    with st.container(horizontal=True, horizontal_alignment="distribute",
+                      vertical_alignment="center", key="tp_header"):
+        st.html(tablo.brand_html(), width="content")
+        with st.container(horizontal=True, vertical_alignment="center", width="content"):
+            st.html(tablo.user_html(actor.name, user_subtitle(conn, actor)), width="content")
+            if st.button("Выйти", key="logout"):
+                st.session_state.clear()
+                st.rerun()
+
+
+def scroll_to(key):
+    """Прокручивает страницу к контейнеру с ключом key (после перехода с главного экрана).
+
+    Скрипт работает в невидимом фрейме и обращается к странице приложения.
+    Номер запроса делает фрейм каждый раз новым, иначе Streamlit его не
+    перерисует и скрипт не выполнится повторно. В скрипт не попадают данные
+    пользователей, только ключ контейнера из кода.
+    """
+    nonce = st.session_state["scroll_nonce"] = st.session_state.get("scroll_nonce", 0) + 1
+    components.html(
+        f"<script>/* {nonce} */(function(){{let n=0;const go=()=>{{"
+        f"const el=window.parent.document.querySelector('.st-key-{key}');"
+        "if(el){el.scrollIntoView({block:'start'});}"
+        "else if(n++<30){setTimeout(go,100);}};setTimeout(go,200);})();</script>",
+        height=0,
     )
-    if st.sidebar.button("Выйти"):
-        st.session_state.clear()
-        st.rerun()
-    return page
+
+
+def go_event(event_id):
+    """Открывает карточку события под расписанием и прокручивает к ней."""
+    open_event(event_id)
+    st.session_state["scroll_to"] = "tp_event_card"
+
+
+def go_schedule():
+    st.session_state["scroll_to"] = "tp_schedule"
 
 
 # ---------- расписание и карточка события ----------
 
 def show_schedule(conn, actor):
-    st.header("Расписание")
+    """Раздел «Расписание»: главный экран над вкладками (FR-51), вкладки и карточка."""
+    if actor.is_organizer:
+        show_organizer_home(conn, actor)
+    else:
+        show_player_home(conn, actor)
+    with st.container(key="tp_schedule"):
+        st.html(tablo.section_title_html("Всё расписание"))
+        show_schedule_tabs(conn, actor)
+    target = st.session_state.pop("scroll_to", None)
+    if target:
+        scroll_to(target)
+
+
+def show_schedule_tabs(conn, actor):
     evs = events.list_events(conn, actor)
     if not evs:
         hint = " Создайте первое в разделе «Новое событие»." if actor.is_organizer else ""
         st.info("Событий нет." + hint)
         return
-    show_upcoming(evs)
     ids = [e["id"] for e in evs]
     by_id = {e["id"]: e for e in evs}
     # Вкладки по типам событий (FR-43); выбор строки открывает карточку (FR-46).
@@ -249,11 +346,12 @@ def show_schedule(conn, actor):
         now = datetime.now()
         upcoming = [e for e in evs if e["start"] >= now]
         st.session_state["event_select"] = (upcoming[0] if upcoming else evs[-1])["id"]
-    event_id = st.selectbox(
-        "Открыть событие", ids, key="event_select",
-        format_func=lambda i: event_label(by_id[i]),
-    )
-    show_event_card(conn, actor, by_id[event_id])
+    with st.container(key="tp_event_card"):
+        event_id = st.selectbox(
+            "Открыть событие", ids, key="event_select",
+            format_func=lambda i: event_label(by_id[i]),
+        )
+        show_event_card(conn, actor, by_id[event_id])
 
 
 def event_columns(ev, opponent=False):
@@ -319,34 +417,136 @@ def open_event(event_id):
     st.session_state["event_select"] = event_id
 
 
-def show_upcoming(evs):
-    """Карточки ближайших будущих событий над таблицей расписания."""
-    now = datetime.now()
-    upcoming = [e for e in evs if e["start"] >= now][:UPCOMING_CARDS]
-    if not upcoming:
-        return
-    st.subheader("Ближайшие события")
-    cols = st.columns(UPCOMING_CARDS)
-    for col, ev in zip(cols, upcoming):
-        cancelled = ev["status"] == "cancelled"
-        with col.container(border=True, height="stretch"):
-            st.markdown(event_badges(ev, compact=True))
-            title = md(ev["title"])
-            st.markdown(f":gray[~~{title}~~]" if cancelled else f"**{title}**")
-            day = to_date(ev["date"])
-            lines = [
-                f"📅 {format_date(ev['date'])}, {WEEKDAYS[day.weekday()]}",
-                f"🕖 Начало: {ev['time']}",
-            ]
-            if ev["gather_time"]:
-                lines.append(f"⏰ Сбор: {ev['gather_time']}")
-            lines.append(f"📍 {md(ev['place'])}" if ev["place"] else "📍 Место не указано")
-            text = "  \n".join(lines)
-            st.markdown(f":gray[{text}]" if cancelled else text)
-            st.button(
-                "Открыть", key=f"card_open_{ev['id']}", width="stretch",
-                on_click=open_event, args=(ev["id"],),
+# ---------- главный экран (FR-49 – FR-51) ----------
+
+def card_grid(name, items):
+    """Сетка карточек: в строке столько карточек шириной от 300 px, сколько помещается;
+    на узком экране они встают друг под другом (как в макете)."""
+    grid = st.container(horizontal=True, gap="medium", key=f"tpgrid_{name}")
+    for item in items:
+        yield grid, item
+
+
+def section_header(title, link_label=None):
+    with st.container(horizontal=True, horizontal_alignment="distribute",
+                      vertical_alignment="center"):
+        st.html(tablo.section_title_html(title), width="content")
+        if link_label:
+            st.button(link_label, type="tertiary", key=f"home_link_{title}",
+                      on_click=go_schedule)
+
+
+def show_player_home(conn, actor):
+    """Главный экран игрока (FR-49)."""
+    data = home.player_home(conn, actor)
+    nxt, last = data["next_event"], data["last_match"]
+    cols = st.columns(2, gap="medium") if last else [st.container()]
+    with cols[0]:
+        with st.container(key="tpcard_next", height="stretch"):
+            if nxt:
+                st.html(tablo.next_event_html(nxt))
+                with st.container(horizontal=True):
+                    st.button(
+                        "Открыть состав" if nxt["type"] == "game" else "Открыть событие",
+                        type="primary", key="home_open_next",
+                        on_click=go_event, args=(nxt["id"],),
+                    )
+                    st.button("Всё расписание", key="home_all", on_click=go_schedule)
+            else:
+                st.html(tablo.label_html("Следующее событие"))
+                st.html(tablo.note_html("Ближайших событий нет."))
+    if last:
+        with cols[1]:
+            with st.container(key="tpcard_last", height="stretch"):
+                st.html(tablo.last_match_html(last))
+                st.button("Открыть матч", key="home_open_last",
+                          on_click=go_event, args=(last["id"],))
+
+    section_header("На этой неделе", "Все события")
+    if not data["week"]:
+        st.html(tablo.note_html("Ближайших событий нет."))
+    for grid, ev in card_grid("week", data["week"]):
+        with grid:
+            with st.container(key=f"tpcard_week_{ev['id']}"):
+                st.html(tablo.week_card_html(ev))
+                if ev["type"] != "game" and ev["can_mark"]:
+                    attendance_buttons(conn, actor, ev)
+                st.button("Открыть", type="tertiary", key=f"home_week_open_{ev['id']}",
+                          on_click=go_event, args=(ev["id"],))
+
+    if data["stats"] is not None:
+        with st.container(key="tpcard_stats"):
+            st.html(tablo.stats_html(data["stats"]))
+
+
+def attendance_buttons(conn, actor, ev):
+    """Кнопки явки в карточке недели: та же функция и проверки, что в карточке события."""
+    with st.container(horizontal=True, gap="small"):
+        for key in ("yes", "maybe", "no"):
+            chosen = ev["my_mark"] == key
+            label = attendance.ATTENDANCE_LABELS[key]
+            pressed = st.button(
+                f"✓ {label}" if chosen else label,
+                key=f"home_att_{ev['id']}_{key}" + ("_on" if chosen else ""),
+                help="Ваш текущий ответ" if chosen else None,
             )
+            if pressed:
+                perform(
+                    lambda status=key: attendance.set_attendance(
+                        conn, actor, ev["id"], actor.player_id, status
+                    ),
+                    "Отметка сохранена.",
+                )
+
+
+def show_organizer_home(conn, actor):
+    """Главный экран организатора (FR-50)."""
+    data = home.organizer_home(conn, actor)
+    left, right = st.columns(2, gap="medium")
+    with left:
+        game = data["needs_action"]
+        if game:
+            with st.container(key="tpwarn_action", height="stretch"):
+                st.html(tablo.needs_action_html(game))
+                with st.container(horizontal=True):
+                    if st.button("Опубликовать состав", type="primary",
+                                 key="home_publish", disabled=not game["squad_players"]):
+                        perform(lambda: squads.publish_squad(conn, actor, game["id"]),
+                                "Состав опубликован.")
+                    st.button("Изменить состав", key="home_edit_squad",
+                              on_click=go_event, args=(game["id"],))
+                if not game["squad_players"]:
+                    st.caption("Чтобы опубликовать состав, выберите игроков: «Изменить состав».")
+        else:
+            with st.container(key="tpcard_action"):
+                st.html(tablo.label_html("Требует действия"))
+                st.html(tablo.note_html(
+                    "Составы на все ближайшие игры опубликованы." if data["no_score"]
+                    or data["week_attendance"] else "Ближайших событий нет."
+                ))
+    with right:
+        with st.container(key="tpcard_new"):
+            st.html(tablo.label_html("Новое событие"))
+            with st.container(horizontal=True):
+                for event_type, label in NEW_EVENT_BUTTONS:
+                    if st.button(label, key=f"home_new_{event_type}", width="stretch"):
+                        st.session_state["ne_type_preset"] = event_type
+                        st.switch_page(PAGES[PAGE_NEW_EVENT])
+        for ev in data["no_score"]:
+            with st.container(key=f"tpcard_noscore_{ev['id']}"):
+                st.html(tablo.no_score_html(ev))
+                st.button("Внести счёт", key=f"home_score_{ev['id']}",
+                          on_click=go_event, args=(ev["id"],))
+
+    section_header("Явка на неделе", "Все события")
+    if not data["week_attendance"]:
+        st.html(tablo.note_html("Тренировок и мероприятий в ближайшие 7 дней нет."))
+    for grid, ev in card_grid("attendance", data["week_attendance"]):
+        with grid:
+            with st.container(key=f"tpcard_att_{ev['id']}"):
+                st.html(tablo.attendance_card_html(ev))
+                st.button("Открыть", type="tertiary", key=f"home_att_open_{ev['id']}",
+                          on_click=go_event, args=(ev["id"],))
 
 
 def show_event_card(conn, actor, ev):
@@ -423,7 +623,9 @@ def show_attendance(conn, actor, ev):
             options,
             index=options.index(current) if current else None,
             format_func=lambda k: f":{ATTENDANCE_COLORS[k]}[{attendance_text(k)}]",
-            key=f"att_choice_{ev['id']}_{target}",
+            # Текущая отметка в ключе: после отметки с главного экрана
+            # переключатель показывает новое значение, а не прежнее.
+            key=f"att_choice_{ev['id']}_{target}_{current}",
         )
         submitted = st.form_submit_button("Сохранить отметку")
     if submitted:
@@ -693,7 +895,7 @@ def show_notifications(conn, actor):
                 cols[0].write(n["text"])
                 label = "Открыть"
             else:
-                cols[0].markdown(f":blue[**● Новое**] · **{n['kind_label']}** · {when}")
+                cols[0].markdown(f":orange[**● Новое**] · **{n['kind_label']}** · {when}")
                 cols[0].markdown(f"**{n['text']}**")
                 label = "Открыть и прочитать"
             if cols[1].button(label, key=f"notif_{n['id']}"):
@@ -702,9 +904,9 @@ def show_notifications(conn, actor):
                 except ServiceError as exc:
                     st.error(str(exc))
                 else:
-                    st.session_state["goto_page"] = PAGE_SCHEDULE
                     st.session_state["goto_event"] = n["event_id"]
-                    st.rerun()
+                    st.session_state["scroll_to"] = "tp_event_card"
+                    st.switch_page(PAGES[PAGE_SCHEDULE])
 
 
 # ---------- новое событие ----------
@@ -713,6 +915,11 @@ def show_new_event(conn, actor):
     st.header("Новое событие")
     ver = st.session_state.setdefault("new_event_ver", 0)
     today = datetime.now().date()
+    # Кнопки «+ Тренировка», «+ Игра», «+ Мероприятие» главного экрана (FR-50)
+    # открывают форму с выбранным типом.
+    preset = st.session_state.pop("ne_type_preset", None)
+    if preset in TYPE_OPTIONS:
+        st.session_state[f"ne_type_{ver}"] = preset
     # Тип выбирается вне формы, чтобы набор полей сразу менялся под тип события.
     event_type = st.selectbox(
         "Тип", TYPE_OPTIONS, format_func=lambda k: f"{TYPE_ICONS[k]} {events.EVENT_TYPES[k]}",
@@ -744,10 +951,10 @@ def show_new_event(conn, actor):
             st.error(str(exc))
             return
         st.session_state["new_event_ver"] = ver + 1
-        st.session_state["goto_page"] = PAGE_SCHEDULE
         st.session_state["goto_event"] = new_id
+        st.session_state["scroll_to"] = "tp_event_card"
         flash("success", "Событие создано.")
-        st.rerun()
+        st.switch_page(PAGES[PAGE_SCHEDULE])
 
 
 # ---------- игроки ----------
@@ -839,11 +1046,12 @@ def show_players(conn, actor):
 
 def main():
     st.set_page_config(page_title=PAGE_TITLE, page_icon=str(LOGO), layout="wide")
+    st.html(f"<style>{TABLO_CSS}</style>")
     conn = connect()
     try:
-        show_flash()
         actor = st.session_state.get("actor")
         if actor is None:
+            show_flash()
             show_login(conn)
             return
         try:
@@ -854,7 +1062,14 @@ def main():
             show_login(conn)
             return
         st.session_state["actor"] = actor
-        page = show_sidebar(conn, actor)
+        # Меню разделов сверху (НТ-7). Права на разделы организатора проверяются
+        # и здесь (игроку они не показываются), и в каждой операции (ТБ-1).
+        PAGES.clear()
+        PAGES.update(build_pages(conn, actor))
+        page = st.navigation(list(PAGES.values()), position="top")
+        st.logo(str(LOGO), size="large")
+        show_header(conn, actor)
+        show_flash()
         if st.session_state.pop("just_logged_in", False):
             # FR-39: число непрочитанных уведомлений сразу после входа.
             unread = notifications.unread_count(conn, actor)
@@ -862,16 +1077,7 @@ def main():
                 st.info(f"Непрочитанных уведомлений: {unread}. Откройте раздел «Уведомления».")
             else:
                 st.info("Новых уведомлений нет.")
-        if page == PAGE_STATS:
-            show_stats(conn, actor)
-        elif page == PAGE_NOTIFICATIONS:
-            show_notifications(conn, actor)
-        elif page == PAGE_NEW_EVENT and actor.is_organizer:
-            show_new_event(conn, actor)
-        elif page == PAGE_PLAYERS and actor.is_organizer:
-            show_players(conn, actor)
-        else:
-            show_schedule(conn, actor)
+        page.run()
     finally:
         conn.close()
 

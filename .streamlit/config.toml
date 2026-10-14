@@ -5,15 +5,30 @@ gatherUsageStats = false
 # Скрывает кнопку Deploy и другие пункты меню для разработчика.
 toolbarMode = "viewer"
 
-# Цвета команды ХК «Иркутский Политех»: синий из логотипа и белый.
-# Контраст (WCAG): текст на белом 15.7:1, на светло-голубом 13.3:1,
-# белый текст на синих кнопках 12.4:1, синий на светло-голубом 10.5:1 —
-# везде выше нормы 4.5:1.
+# Оформление «Табло» (НТ-7): тёмный фон, светлый текст, голубой основной цвет.
+# Контраст (WCAG), норма 4.5:1:
+#   текст #EAF1FB на фоне #0A1428 — 16.2:1, на втором фоне #101E3A — 14.6:1;
+#   основной #7CC4FF на фоне — 9.8:1, на втором фоне — 8.8:1;
+#   тёмный текст #0A1428 на основной кнопке #7CC4FF — 9.8:1.
+# Дополнительные цвета и проверка всех пар — в teamplan/tablo.py
+# и тесте tests/test_tablo.py.
 [theme]
-base = "light"
-primaryColor = "#2A2F66"
-backgroundColor = "#FFFFFF"
-secondaryBackgroundColor = "#E6EDF8"
-textColor = "#1A1F4B"
-linkColor = "#2A2F66"
-borderColor = "#C5D2EA"
+base = "dark"
+primaryColor = "#7CC4FF"
+backgroundColor = "#0A1428"
+secondaryBackgroundColor = "#101E3A"
+textColor = "#EAF1FB"
+linkColor = "#7CC4FF"
+borderColor = "#1E2C4A"
+# Шрифты из Google Fonts: Golos Text — текст, Oswald — заголовки,
+# JetBrains Mono — цифры счёта и статистики в своих блоках главного экрана.
+font = "'Golos Text':https://fonts.googleapis.com/css2?family=Golos+Text:wght@400;500;600&display=swap"
+headingFont = "Oswald:https://fonts.googleapis.com/css2?family=Oswald:wght@500;600;700&display=swap"
+codeFont = "'JetBrains Mono':https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@500;700&display=swap"
+# Янтарный — «требует действия», «счёт не внесён», непрочитанные уведомления.
+orangeColor = "#FFB020"
+orangeTextColor = "#FFD27A"
+orangeBackgroundColor = "#3A2A0B"
+# Зелёный — «Буду», «Вы в составе», «Победа».
+greenTextColor = "#8BF0B7"
+greenBackgroundColor = "#12422E"

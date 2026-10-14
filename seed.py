@@ -4,8 +4,8 @@
 Заново:   python seed.py --reset   (удаляет файл базы и создаёт данные с нуля)
 
 Все имена, логины и пароли вымышленные. Даты событий считаются от сегодняшнего дня.
-Сыгранная игра со счётом 2:1 создаётся в прошлом: такое возможно только здесь,
-в интерфейсе событие в прошлом создать нельзя.
+Сыгранная игра со счётом 2:1 и игра без счёта создаются в прошлом: такое возможно
+только здесь, в интерфейсе событие в прошлом создать нельзя.
 """
 import argparse
 import os
@@ -26,6 +26,12 @@ PLAYED_GAME_TITLE = "Сыгранная игра с командой «Прош�
 # Соперники вымышленные (ТБ-5).
 PLAYED_GAME_OPPONENT = "Прошлый соперник"
 FUTURE_GAME_OPPONENT = "Тестовые ястребы"
+# Для главного экрана организатора (AC-19): игра с неопубликованным составом
+# и прошедшая игра без счёта.
+DRAFT_GAME_OPPONENT = "Тестовые медведи"
+DRAFT_GAME_TITLE = f"Игра с командой «{DRAFT_GAME_OPPONENT}»"
+NO_SCORE_GAME_OPPONENT = "Тестовая звезда"
+NO_SCORE_GAME_TITLE = f"Игра с командой «{NO_SCORE_GAME_OPPONENT}»"
 
 
 def add_played_game(conn, org, first_id, second_id):
@@ -47,30 +53,68 @@ def add_played_game(conn, org, first_id, second_id):
     return game
 
 
+def add_draft_game(conn, org, first_id, second_id):
+    """Будущая игра через 12 дней с черновиком состава (игроки его не видят)."""
+    today = datetime.now().date()
+    game = events.create_event(
+        conn, org, "game", DRAFT_GAME_TITLE, today + timedelta(days=12), time(19, 30),
+        "Стадион", gather_time=time(18, 45), opponent=DRAFT_GAME_OPPONENT,
+    )
+    squads.save_squad(conn, org, game, [first_id, second_id])
+    return game
+
+
+def add_no_score_game(conn, org, first_id, second_id):
+    """Игра вчера с опубликованным составом, счёт не внесён («Счёт не внесён», FR-48)."""
+    today = datetime.now().date()
+    week_ago = datetime.combine(today - timedelta(days=7), time(12, 0))
+    game = events.create_event(
+        conn, org, "game", NO_SCORE_GAME_TITLE, today - timedelta(days=1), time(19, 30),
+        "Стадион", gather_time=time(18, 45), now=week_ago, opponent=NO_SCORE_GAME_OPPONENT,
+    )
+    squads.save_squad(conn, org, game, [first_id, second_id], now=week_ago)
+    squads.publish_squad(conn, org, game, now=week_ago)
+    return game
+
+
+# Игры, которые дополняют базу с тестовыми данными прежних версий: название и функция.
+TOP_UP_GAMES = [
+    (PLAYED_GAME_TITLE, "add_played_game"),
+    (DRAFT_GAME_TITLE, "add_draft_game"),
+    (NO_SCORE_GAME_TITLE, "add_no_score_game"),
+]
+
+
 def _player_id(conn, login_name):
     row = conn.execute("SELECT player_id FROM users WHERE login = ?", (login_name,)).fetchone()
     return row["player_id"] if row else None
 
 
 def top_up(conn):
-    """Добавляет сыгранную игру в базу с тестовыми данными прежней версии.
+    """Добавляет недостающие тестовые игры в базу с тестовыми данными прежней версии.
 
-    Срабатывает, только если в базе есть тестовые аккаунты из этого файла
-    и сыгранной игры ещё нет. Другие данные не изменяются.
+    Срабатывает, только если в базе есть тестовые аккаунты из этого файла.
+    Добавляются только игры, которых ещё нет (по названию). Другие данные
+    не изменяются. Возвращает названия добавленных игр.
     """
-    if conn.execute("SELECT 1 FROM events WHERE title = ?", (PLAYED_GAME_TITLE,)).fetchone():
-        return False
+    missing = [
+        (title, func) for title, func in TOP_UP_GAMES
+        if not conn.execute("SELECT 1 FROM events WHERE title = ?", (title,)).fetchone()
+    ]
+    if not missing:
+        return []
     first, second = _player_id(conn, PLAYERS[0]["login"]), _player_id(conn, PLAYERS[1]["login"])
     if first is None or second is None:
-        return False
+        return []
     try:
         org = auth.login(conn, ORGANIZER["login"], ORGANIZER["password"])
     except ServiceError:
-        return False
+        return []
     if not org.is_organizer:
-        return False
-    add_played_game(conn, org, first, second)
-    return True
+        return []
+    for title, func in missing:
+        globals()[func](conn, org, first, second)
+    return [title for title, _ in missing]
 
 
 def main():
@@ -84,10 +128,11 @@ def main():
 
     conn = connect()
     if conn.execute("SELECT 1 FROM users LIMIT 1").fetchone():
-        if top_up(conn):
+        added = top_up(conn)
+        if added:
             print(
-                "В базу с тестовыми данными добавлена сыгранная игра со счётом 2:1, "
-                "остальные данные не изменены."
+                "В базу с тестовыми данными добавлены игры: " + "; ".join(added)
+                + ". Остальные данные не изменены."
             )
         else:
             print("В базе уже есть данные, они не изменены.")
@@ -127,6 +172,8 @@ def main():
     squads.save_squad(conn, org, game, [ids[0], ids[1]])
     squads.publish_squad(conn, org, game)
     add_played_game(conn, org, ids[0], ids[1])
+    add_draft_game(conn, org, ids[0], ids[1])
+    add_no_score_game(conn, org, ids[0], ids[1])
 
     first = auth.login(conn, PLAYERS[0]["login"], PLAYERS[0]["password"])
     attendance.set_attendance(conn, first, training, first.player_id, "yes")
