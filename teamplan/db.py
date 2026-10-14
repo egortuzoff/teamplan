@@ -33,6 +33,24 @@ CREATE TABLE IF NOT EXISTS {name} (
 );
 """
 
+# Таблица уведомлений описана отдельно по той же причине: при обновлении базы
+# прежней версии она пересоздаётся с новыми видами уведомлений
+# (_upgrade_notifications). attendance, reply_overdue, no_score — уведомления
+# организатору (FR-52 – FR-54).
+NOTIFICATIONS_TABLE = """
+CREATE TABLE IF NOT EXISTS {name} (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id     INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    event_id    INTEGER NOT NULL REFERENCES events(id) ON DELETE CASCADE,
+    kind        TEXT NOT NULL CHECK (kind IN (
+                    'moved', 'cancelled', 'squad_published', 'squad_changed', 'result',
+                    'attendance', 'reply_overdue', 'no_score')),
+    text        TEXT NOT NULL,
+    created_at  TEXT NOT NULL,
+    read_at     TEXT
+);
+"""
+
 # Таблицы создаются через IF NOT EXISTS: при запуске на базе прежней версии
 # недостающие таблицы (результаты, голы, уведомления) добавляются, данные
 # существующих таблиц не затрагиваются.
@@ -96,19 +114,23 @@ CREATE TABLE IF NOT EXISTS goals (
     CHECK (assist_id IS NULL OR assist_id <> scorer_id)
 );
 
-CREATE TABLE IF NOT EXISTS notifications (
-    id          INTEGER PRIMARY KEY AUTOINCREMENT,
-    user_id     INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-    event_id    INTEGER NOT NULL REFERENCES events(id) ON DELETE CASCADE,
-    kind        TEXT NOT NULL CHECK (kind IN (
-                    'moved', 'cancelled', 'squad_published', 'squad_changed', 'result')),
-    text        TEXT NOT NULL,
-    created_at  TEXT NOT NULL,
-    read_at     TEXT
-);
+{notifications_table}
+""".replace("{events_table}", EVENTS_TABLE.format(name="events").strip()).replace(
+    "{notifications_table}", NOTIFICATIONS_TABLE.format(name="notifications").strip()
+)
 
+# Индексы создаются после обновления таблиц: таблица уведомлений прежней
+# версии пересоздаётся (_upgrade_notifications), и её индексы удаляются вместе с ней.
+# Уникальный индекс notifications_once — защита от дубликатов уведомлений
+# «срок ответа прошёл» и «внесите счёт» (FR-53 – FR-55) на уровне базы:
+# одно такое уведомление на событие и получателя даже при одновременных
+# открытиях страниц.
+INDEXES = """
 CREATE INDEX IF NOT EXISTS notifications_user ON notifications (user_id, id);
-""".replace("{events_table}", EVENTS_TABLE.format(name="events").strip())
+CREATE UNIQUE INDEX IF NOT EXISTS notifications_once
+    ON notifications (kind, event_id, user_id)
+    WHERE kind IN ('reply_overdue', 'no_score');
+"""
 
 
 def get_db_path():
@@ -129,6 +151,8 @@ def connect(path=None):
     conn.executescript(SCHEMA)
     _upgrade_events(conn)
     _add_opponent(conn)
+    _upgrade_notifications(conn)
+    conn.executescript(INDEXES)
     conn.execute("PRAGMA foreign_keys = ON")
     return conn
 
@@ -176,14 +200,53 @@ def _add_opponent(conn):
         conn.execute("ALTER TABLE events ADD COLUMN opponent TEXT")
 
 
+def _notifications_current(conn):
+    row = conn.execute(
+        "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'notifications'"
+    ).fetchone()
+    return "'no_score'" in row["sql"]
+
+
+def _upgrade_notifications(conn):
+    """Добавляет виды уведомлений организатору (ТЗ 0.8) в базу прежней версии.
+
+    Ограничение CHECK на вид уведомления в SQLite не изменить, поэтому
+    таблица пересоздаётся с копированием всех уведомлений, в том числе
+    отметок о прочтении. На таблицу уведомлений не ссылаются другие таблицы,
+    так что её удаление ничего не затрагивает.
+    """
+    if _notifications_current(conn):
+        return
+    # IMMEDIATE и повторная проверка: если две страницы открылись одновременно,
+    # таблицу пересоздаёт только одна из них.
+    conn.execute("BEGIN IMMEDIATE")
+    try:
+        if _notifications_current(conn):
+            conn.rollback()
+            return
+        conn.execute(NOTIFICATIONS_TABLE.format(name="notifications_new"))
+        conn.execute(
+            "INSERT INTO notifications_new (id, user_id, event_id, kind, text, created_at, read_at) "
+            "SELECT id, user_id, event_id, kind, text, created_at, read_at FROM notifications"
+        )
+        conn.execute("DROP TABLE notifications")
+        conn.execute("ALTER TABLE notifications_new RENAME TO notifications")
+    except BaseException:
+        conn.rollback()
+        raise
+    conn.commit()
+
+
 @contextmanager
-def transaction(conn):
+def transaction(conn, immediate=False):
     """Выполняет изменения одной транзакцией.
 
     При любой ошибке изменения откатываются, ранее сохранённые данные
     не затрагиваются (ТС-3). Сбой базы превращается в понятное сообщение.
+    immediate=True сразу занимает запись: одновременные транзакции
+    выполняются по очереди, а не завершаются ошибкой блокировки.
     """
-    conn.execute("BEGIN")
+    conn.execute("BEGIN IMMEDIATE" if immediate else "BEGIN")
     try:
         yield conn
     except ServiceError:

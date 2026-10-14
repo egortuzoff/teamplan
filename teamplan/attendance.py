@@ -1,11 +1,11 @@
 """Явка на тренировки и мероприятия и сводка (FR-16 – FR-22)."""
 from datetime import datetime
 
-from . import auth
+from . import auth, notifications
 from .common import DATETIME_FMT, current_time, stamp
 from .db import transaction
 from .errors import ServiceError
-from .events import _get_event_row, is_started
+from .events import _get_event_row, describe_with_type, is_started
 from .players import list_players
 
 ATTENDANCE_LABELS = {"yes": "Буду", "maybe": "Под вопросом", "no": "Не буду"}
@@ -29,6 +29,11 @@ def set_attendance(conn, actor, event_id, player_id, status, now=None):
     if conn.execute("SELECT 1 FROM players WHERE id = ?", (player_id,)).fetchone() is None:
         raise ServiceError("Игрок не найден.")
     with transaction(conn):
+        previous = conn.execute(
+            "SELECT status FROM attendance WHERE event_id = ? AND player_id = ?",
+            (event_id, player_id),
+        ).fetchone()
+        previous = previous["status"] if previous else None
         # Новая отметка заменяет прежнюю (FR-18).
         conn.execute(
             "INSERT INTO attendance (event_id, player_id, status, updated_at) "
@@ -37,6 +42,28 @@ def set_attendance(conn, actor, event_id, player_id, status, now=None):
             "status = excluded.status, updated_at = excluded.updated_at",
             (event_id, player_id, status, stamp(now)),
         )
+        # FR-52: игрок сам ответил «Под вопросом» или «Не буду» впервые
+        # или изменил ответ. Отметка организатора уведомления не создаёт (FR-35).
+        if not fresh.is_organizer and _should_notify(previous, status):
+            notifications.notify_organizers(
+                conn, event_id, "attendance",
+                _attendance_text(conn, player_id, row, previous, status), now,
+            )
+
+
+def _should_notify(previous, status):
+    if previous is None:
+        return status != "yes"
+    return previous != status
+
+
+def _attendance_text(conn, player_id, row, previous, status):
+    name = conn.execute("SELECT name FROM players WHERE id = ?", (player_id,)).fetchone()["name"]
+    before = f"«{ATTENDANCE_LABELS[previous]}»" if previous else "ответа не было"
+    return (
+        f"{name}: явка на {describe_with_type(row)} — «{ATTENDANCE_LABELS[status]}» "
+        f"(прежний ответ: {before})."
+    )
 
 
 def attendance_summary(conn, actor, event_id, now=None):

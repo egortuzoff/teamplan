@@ -49,6 +49,19 @@ def display_status(event, has_score, now=None):
     return "played" if has_score else "no_score"
 
 
+def describe_with_type(row):
+    """Тип, название, дата и время события — для уведомлений организатору.
+
+    Тип не повторяется, если название с него начинается
+    («Тренировка», «Игра с командой «…»»).
+    """
+    label = EVENT_TYPES[row["type"]]
+    text = notifications.describe_event(row)
+    if row["title"].casefold().startswith(label.casefold()):
+        return text
+    return f"{label} {text}"
+
+
 def _scored_event_ids(conn):
     return {r["event_id"] for r in conn.execute("SELECT event_id FROM results")}
 

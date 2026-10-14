@@ -16,6 +16,9 @@ KIND_LABELS = {
     "squad_published": "Состав",
     "squad_changed": "Состав",
     "result": "Результат",
+    "attendance": "Явка",
+    "reply_overdue": "Срок ответа",
+    "no_score": "Счёт",
 }
 
 
@@ -74,6 +77,32 @@ def notify(conn, actor, player_ids, event_id, kind, text, now=None):
             "VALUES (?, ?, ?, ?, ?)",
             (user["id"], event_id, kind, message, ts),
         )
+
+
+def organizer_user_ids(conn):
+    """Аккаунты организаторов — получатели уведомлений FR-52 – FR-54."""
+    return [r["id"] for r in conn.execute("SELECT id FROM users WHERE role = 'organizer'")]
+
+
+def notify_organizers(conn, event_id, kind, text, now=None):
+    """Уведомления организатору (вызывается внутри транзакции).
+
+    Для «срок ответа прошёл» и «внесите счёт» уникальный индекс
+    notifications_once не даёт создать второе такое уведомление
+    на то же событие тому же получателю (FR-53 – FR-55): повторная
+    вставка пропускается. Возвращает число созданных уведомлений.
+    """
+    created = 0
+    for user_id in organizer_user_ids(conn):
+        cur = conn.execute(
+            "INSERT INTO notifications (user_id, event_id, kind, text, created_at) "
+            "VALUES (?, ?, ?, ?, ?) "
+            "ON CONFLICT (kind, event_id, user_id) "
+            "WHERE kind IN ('reply_overdue', 'no_score') DO NOTHING",
+            (user_id, event_id, kind, text, stamp(now)),
+        )
+        created += cur.rowcount
+    return created
 
 
 def list_notifications(conn, actor):
