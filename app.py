@@ -12,7 +12,8 @@ import streamlit as st
 import streamlit.components.v1 as components
 
 from teamplan import (
-    attendance, auth, events, home, notifications, players, results, squads, summary, tablo,
+    attendance, auth, deadlines, events, home, notifications, players, results, squads, summary,
+    tablo,
 )
 from teamplan.common import DATE_FMT, DATETIME_FMT, TIME_FMT, format_date, format_datetime
 from teamplan.db import connect
@@ -1049,6 +1050,12 @@ def main():
     st.html(f"<style>{TABLO_CSS}</style>")
     conn = connect()
     try:
+        # FR-55: сроки FR-53 и FR-54 проверяются при открытии любой страницы.
+        # Сбой проверки не мешает работе страницы: она повторится при следующем открытии.
+        try:
+            deadlines.check_deadlines(conn)
+        except ServiceError:
+            logger.exception("Не удалось проверить сроки уведомлений")
         actor = st.session_state.get("actor")
         if actor is None:
             show_flash()

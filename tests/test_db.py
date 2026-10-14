@@ -222,3 +222,69 @@ def test_opponent_column_is_added_without_data_loss(stage1_db, now):
         assert conn.execute("SELECT COUNT(*) FROM events").fetchone()[0] == 2
     finally:
         conn.close()
+
+
+# ---------- уведомления организатору (ТЗ 0.8) в базе прежней версии ----------
+
+# Таблица уведомлений в том виде, в каком её создавала версия по ТЗ 0.7:
+# без видов уведомлений организатору и без защиты от дубликатов.
+STAGE2_NOTIFICATIONS = """
+CREATE TABLE notifications (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    event_id INTEGER NOT NULL REFERENCES events(id) ON DELETE CASCADE,
+    kind TEXT NOT NULL CHECK (kind IN (
+        'moved', 'cancelled', 'squad_published', 'squad_changed', 'result')),
+    text TEXT NOT NULL, created_at TEXT NOT NULL, read_at TEXT
+);
+CREATE INDEX notifications_user ON notifications (user_id, id);
+"""
+
+
+def test_notifications_table_is_upgraded_without_data_loss(stage1_db, now):
+    """Уведомления прежней версии (и отметки о прочтении) сохраняются, новые виды работают."""
+    from teamplan import deadlines, notifications
+
+    old = sqlite3.connect(stage1_db)
+    old.executescript(STAGE2_NOTIFICATIONS)
+    old.execute(
+        "INSERT INTO notifications VALUES (5, 1, 1, 'moved', 'Перенос: тренировка', ?, ?)",
+        (TS, TS),
+    )
+    old.execute(
+        "INSERT INTO notifications VALUES (6, 1, 2, 'result', 'Результат: 1:0', ?, NULL)", (TS,)
+    )
+    old.commit()
+    old.close()
+
+    conn = connect(stage1_db)
+    try:
+        player = auth.login(conn, "igrok1", "pass-igrok1")
+        org = auth.login(conn, "trener", "pass-org")
+        feed = notifications.list_notifications(conn, player)
+        assert [(n["id"], n["kind"], n["text"], n["is_read"]) for n in feed] == [
+            (6, "result", "Результат: 1:0", False),
+            (5, "moved", "Перенос: тренировка", True),
+        ]
+        # Прошедшая игра без счёта: одно уведомление организатору, повтор не создаётся.
+        assert deadlines.check_deadlines(conn, now=now) == 1
+        assert deadlines.check_deadlines(conn, now=now) == 0
+        assert [n["kind"] for n in notifications.list_notifications(conn, org)] == ["no_score"]
+        indexes = {r[1] for r in conn.execute("PRAGMA index_list(notifications)")}
+        assert {"notifications_user", "notifications_once"} <= indexes
+    finally:
+        conn.close()
+
+    conn = connect(stage1_db)  # повторный запуск ничего не меняет
+    try:
+        assert conn.execute("SELECT COUNT(*) FROM notifications").fetchone()[0] == 3
+        with pytest.raises(sqlite3.IntegrityError):
+            conn.execute(
+                "INSERT INTO notifications (user_id, event_id, kind, text, created_at) "
+                "VALUES (2, 2, 'no_score', 'дубль', 't')"
+            )
+        # Внешние ключи работают: удаление пользователя удаляет его уведомления.
+        conn.execute("DELETE FROM users WHERE id = 1")
+        assert conn.execute("SELECT COUNT(*) FROM notifications").fetchone()[0] == 1
+    finally:
+        conn.close()
