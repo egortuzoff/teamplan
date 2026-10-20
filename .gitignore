@@ -12,3 +12,6 @@ data/
 *.sqlite3
 .env
 secrets.toml
+
+# Локальные настройки Claude Code
+.claude/

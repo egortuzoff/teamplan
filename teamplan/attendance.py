@@ -26,18 +26,18 @@ def set_attendance(conn, actor, event_id, player_id, status, now=None):
     event = dict(row)
     if is_started(event, now):
         raise ServiceError("Событие уже началось, отметку изменить нельзя.")
-    if conn.execute("SELECT 1 FROM players WHERE id = ?", (player_id,)).fetchone() is None:
+    if conn.execute("SELECT 1 FROM players WHERE id = %s", (player_id,)).fetchone() is None:
         raise ServiceError("Игрок не найден.")
     with transaction(conn):
         previous = conn.execute(
-            "SELECT status FROM attendance WHERE event_id = ? AND player_id = ?",
+            "SELECT status FROM attendance WHERE event_id = %s AND player_id = %s",
             (event_id, player_id),
         ).fetchone()
         previous = previous["status"] if previous else None
         # Новая отметка заменяет прежнюю (FR-18).
         conn.execute(
             "INSERT INTO attendance (event_id, player_id, status, updated_at) "
-            "VALUES (?, ?, ?, ?) "
+            "VALUES (%s, %s, %s, %s) "
             "ON CONFLICT(event_id, player_id) DO UPDATE SET "
             "status = excluded.status, updated_at = excluded.updated_at",
             (event_id, player_id, status, stamp(now)),
@@ -58,7 +58,7 @@ def _should_notify(previous, status):
 
 
 def _attendance_text(conn, player_id, row, previous, status):
-    name = conn.execute("SELECT name FROM players WHERE id = ?", (player_id,)).fetchone()["name"]
+    name = conn.execute("SELECT name FROM players WHERE id = %s", (player_id,)).fetchone()["name"]
     before = f"«{ATTENDANCE_LABELS[previous]}»" if previous else "ответа не было"
     return (
         f"{name}: явка на {describe_with_type(row)} — «{ATTENDANCE_LABELS[status]}» "
@@ -75,7 +75,7 @@ def attendance_summary(conn, actor, event_id, now=None):
     marks = {
         r["player_id"]: r["status"]
         for r in conn.execute(
-            "SELECT player_id, status FROM attendance WHERE event_id = ?", (event_id,)
+            "SELECT player_id, status FROM attendance WHERE event_id = %s", (event_id,)
         )
     }
     by_status = {"yes": [], "maybe": [], "no": [], "none": []}

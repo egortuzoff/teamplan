@@ -26,10 +26,26 @@ jobs:
       matrix:
         # ТП-1: без Docker поддерживаются Python 3.12 и 3.13.
         python-version: ["3.12", "3.13"]
+    # ТП-5: тесты выполняются на PostgreSQL 17.
+    services:
+      postgres:
+        image: postgres:17
+        env:
+          POSTGRES_DB: teamplan_test
+          POSTGRES_USER: teamplan
+          POSTGRES_PASSWORD: teamplan-ci
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U teamplan -d teamplan_test"
+          --health-interval 2s
+          --health-timeout 5s
+          --health-retries 30
     env:
       # Тот же часовой пояс, что и в docker-compose.yml: от него зависят
       # правила «событие началось» и «срок в прошлом».
       TZ: Europe/Moscow
+      TEST_DATABASE_URL: postgresql://teamplan:teamplan-ci@localhost:5432/teamplan_test
     steps:
       - name: Получить код
         uses: actions/checkout@v4
@@ -50,20 +66,20 @@ jobs:
         run: python -m pytest -v
 
   docker:
-    name: Docker (сборка и запуск)
+    name: Docker (приложение и PostgreSQL)
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
       - name: Получить код
         uses: actions/checkout@v4
 
-      - name: Собрать образ
-        run: docker build -t teamplan .
+      # Как у пользователя по README: без файла .env, значения по умолчанию.
+      - name: Собрать и запустить приложение вместе с СУБД
+        run: docker compose up -d --build
 
-      - name: Запустить контейнер и проверить, что приложение отвечает
+      - name: Проверить, что приложение отвечает
         run: |
-          docker run -d --name teamplan -p 8501:8501 -e TZ=Europe/Moscow teamplan
-          for i in $(seq 1 30); do
+          for i in $(seq 1 45); do
             if curl -fsS http://localhost:8501/_stcore/health; then
               echo
               echo "Приложение запустилось."
@@ -71,14 +87,13 @@ jobs:
             fi
             sleep 2
           done
-          echo "Приложение не ответило за 60 секунд. Журнал контейнера:"
-          docker logs teamplan
+          echo "Приложение не ответило за 90 секунд."
           exit 1
 
-      - name: Журнал контейнера
+      - name: Журнал контейнеров
         if: always()
-        run: docker logs teamplan || true
+        run: docker compose logs || true
 
-      - name: Остановить контейнер
+      - name: Остановить и удалить контейнеры и том базы
         if: always()
-        run: docker rm -f teamplan || true
+        run: docker compose down -v || true

@@ -26,14 +26,14 @@ def _player_names(conn):
 def _load_result(conn, event_id):
     row = conn.execute(
         "SELECT our_score, their_score, created_at, updated_at FROM results "
-        "WHERE event_id = ?", (event_id,),
+        "WHERE event_id = %s", (event_id,),
     ).fetchone()
     if row is None:
         return None
     goals = [
         (g["scorer_id"], g["assist_id"])
         for g in conn.execute(
-            "SELECT scorer_id, assist_id FROM goals WHERE event_id = ? ORDER BY id",
+            "SELECT scorer_id, assist_id FROM goals WHERE event_id = %s ORDER BY id",
             (event_id,),
         )
     ]
@@ -123,7 +123,7 @@ def save_result(conn, actor, event_id, our_score, their_score, goals=(), now=Non
     if event_start(row["date"], row["time"]) > current_time(now):
         raise ServiceError("Результат можно внести только после начала игры.")
     state = conn.execute(
-        "SELECT state FROM squads WHERE event_id = ?", (event_id,)
+        "SELECT state FROM squads WHERE event_id = %s", (event_id,)
     ).fetchone()
     if state is None or state["state"] != "published":
         raise ServiceError("Результат вносится для игры с опубликованным составом.")
@@ -144,18 +144,18 @@ def save_result(conn, actor, event_id, our_score, their_score, goals=(), now=Non
         if old is None:
             conn.execute(
                 "INSERT INTO results (event_id, our_score, their_score, created_at, updated_at) "
-                "VALUES (?, ?, ?, ?, ?)",
+                "VALUES (%s, %s, %s, %s, %s)",
                 (event_id, our_score, their_score, ts, ts),
             )
         else:
             conn.execute(
-                "UPDATE results SET our_score = ?, their_score = ?, updated_at = ? "
-                "WHERE event_id = ?",
+                "UPDATE results SET our_score = %s, their_score = %s, updated_at = %s "
+                "WHERE event_id = %s",
                 (our_score, their_score, ts, event_id),
             )
-        conn.execute("DELETE FROM goals WHERE event_id = ?", (event_id,))
-        conn.executemany(
-            "INSERT INTO goals (event_id, scorer_id, assist_id) VALUES (?, ?, ?)",
+        conn.execute("DELETE FROM goals WHERE event_id = %s", (event_id,))
+        conn.cursor().executemany(
+            "INSERT INTO goals (event_id, scorer_id, assist_id) VALUES (%s, %s, %s)",
             [(event_id, scorer, assist) for scorer, assist in goals],
         )
         verb = "Внесён" if old is None else "Изменён"
@@ -169,7 +169,8 @@ def save_result(conn, actor, event_id, our_score, their_score, goals=(), now=Non
 
 
 def _counts(conn, sql):
-    return {row[0]: row[1] for row in conn.execute(sql)}
+    """sql возвращает столбцы id и n: id игрока и число."""
+    return {row["id"]: row["n"] for row in conn.execute(sql)}
 
 
 def player_stats(conn, actor):
@@ -183,13 +184,14 @@ def player_stats(conn, actor):
         return []
     games = _counts(
         conn,
-        "SELECT sp.player_id, COUNT(*) FROM squad_players sp "
+        "SELECT sp.player_id AS id, COUNT(*) AS n FROM squad_players sp "
         "JOIN results r ON r.event_id = sp.event_id GROUP BY sp.player_id",
     )
-    scored = _counts(conn, "SELECT scorer_id, COUNT(*) FROM goals GROUP BY scorer_id")
+    scored = _counts(conn, "SELECT scorer_id AS id, COUNT(*) AS n FROM goals GROUP BY scorer_id")
     assists = _counts(
         conn,
-        "SELECT assist_id, COUNT(*) FROM goals WHERE assist_id IS NOT NULL GROUP BY assist_id",
+        "SELECT assist_id AS id, COUNT(*) AS n FROM goals WHERE assist_id IS NOT NULL "
+        "GROUP BY assist_id",
     )
     return [
         {"id": p["id"], "name": p["name"], "number": p["number"],

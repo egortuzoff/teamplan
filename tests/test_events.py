@@ -1,4 +1,4 @@
-import sqlite3
+import psycopg
 from datetime import datetime, time, timedelta
 
 import pytest
@@ -129,7 +129,7 @@ def test_delete_event_removes_marks_and_squad(conn, org, p1, mk_event, now):
     events.delete_event(conn, org, game)
 
     for table in ("events", "attendance", "squads", "squad_players"):
-        assert conn.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0] == 0
+        assert conn.execute(f"SELECT COUNT(*) AS n FROM {table}").fetchone()["n"] == 0
 
 
 def test_transaction_rolls_back_on_database_error(conn):
@@ -138,8 +138,8 @@ def test_transaction_rolls_back_on_database_error(conn):
             conn.execute(
                 "INSERT INTO players (name, created_at, updated_at) VALUES ('X', 't', 't')"
             )
-            raise sqlite3.OperationalError("disk I/O error")
-    assert conn.execute("SELECT COUNT(*) FROM players").fetchone()[0] == 0
+            raise psycopg.OperationalError("server closed the connection unexpectedly")
+    assert conn.execute("SELECT COUNT(*) AS n FROM players").fetchone()["n"] == 0
 
 
 def test_activity_has_attendance_and_reply_by(conn, org, p1, mk_event, now):
@@ -269,9 +269,9 @@ def test_delete_event_removes_its_notifications(conn, org, p1, mk_event, now):
     event_id = mk_event()
     attendance.set_attendance(conn, p1, event_id, p1.player_id, "yes", now=now)
     events.cancel_event(conn, org, event_id, now=now)
-    assert conn.execute("SELECT COUNT(*) FROM notifications").fetchone()[0] == 1
+    assert conn.execute("SELECT COUNT(*) AS n FROM notifications").fetchone()["n"] == 1
     events.delete_event(conn, org, event_id)
-    assert conn.execute("SELECT COUNT(*) FROM notifications").fetchone()[0] == 0
+    assert conn.execute("SELECT COUNT(*) AS n FROM notifications").fetchone()["n"] == 0
 
 
 # ---------- статус для показа (FR-48) ----------
@@ -328,7 +328,7 @@ def test_display_status_in_list(conn, org, mk_event, now):
     [item] = events.list_events(conn, org, now=now)
     assert item["id"] == ev and item["display_status"] == "planned"
     # В базе по-прежнему хранится только признак отмены.
-    assert conn.execute("SELECT status FROM events WHERE id = ?", (ev,)).fetchone()[0] == "planned"
+    assert conn.execute("SELECT status FROM events WHERE id = %s", (ev,)).fetchone()["status"] == "planned"
 
 
 @pytest.mark.parametrize("status, event_type, started, scored, expected", [

@@ -22,7 +22,7 @@ DISPLAY_STATUS_LABELS = {
 
 
 def _get_event_row(conn, event_id):
-    row = conn.execute("SELECT * FROM events WHERE id = ?", (event_id,)).fetchone()
+    row = conn.execute("SELECT * FROM events WHERE id = %s", (event_id,)).fetchone()
     if row is None:
         raise ServiceError("Событие не найдено.")
     return row
@@ -140,9 +140,9 @@ def create_event(conn, actor, event_type, title, date, time, place=None,
         return conn.execute(
             "INSERT INTO events (type, title, opponent, date, time, gather_time, place, "
             "status, reply_by, created_at, updated_at) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, 'planned', ?, ?, ?)",
+            "VALUES (%s, %s, %s, %s, %s, %s, %s, 'planned', %s, %s, %s) RETURNING id",
             (event_type, title, opponent, date, time, gather_time, place, reply_by, ts, ts),
-        ).lastrowid
+        ).fetchone()["id"]
 
 
 def _move_text(row, date, time, gather_time, place):
@@ -188,8 +188,8 @@ def update_event(conn, actor, event_id, title, date, time, place=None,
     )
     with transaction(conn):
         conn.execute(
-            "UPDATE events SET title = ?, opponent = ?, date = ?, time = ?, "
-            "gather_time = ?, place = ?, reply_by = ?, updated_at = ? WHERE id = ?",
+            "UPDATE events SET title = %s, opponent = %s, date = %s, time = %s, "
+            "gather_time = %s, place = %s, reply_by = %s, updated_at = %s WHERE id = %s",
             (title, opponent, date, time, gather_time, place, reply_by, stamp(now), event_id),
         )
         if moved:
@@ -212,7 +212,7 @@ def cancel_event(conn, actor, event_id, now=None):
         raise ServiceError("Событие уже началось, отменить его нельзя.")
     with transaction(conn):
         conn.execute(
-            "UPDATE events SET status = 'cancelled', updated_at = ? WHERE id = ?",
+            "UPDATE events SET status = 'cancelled', updated_at = %s WHERE id = %s",
             (stamp(now), event_id),
         )
         notifications.notify(
@@ -224,7 +224,7 @@ def cancel_event(conn, actor, event_id, now=None):
 def has_result(conn, event_id):
     """True, если у игры внесён счёт или голы (FR-14)."""
     return conn.execute(
-        "SELECT 1 FROM results WHERE event_id = ?", (event_id,)
+        "SELECT 1 FROM results WHERE event_id = %s", (event_id,)
     ).fetchone() is not None
 
 
@@ -242,7 +242,7 @@ def delete_event(conn, actor, event_id):
             "Ошибки исправляются редактированием результата."
         )
     with transaction(conn):
-        conn.execute("DELETE FROM events WHERE id = ?", (event_id,))
+        conn.execute("DELETE FROM events WHERE id = %s", (event_id,))
 
 
 def list_events(conn, actor, now=None):

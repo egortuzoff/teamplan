@@ -108,7 +108,7 @@ def login(conn, login_name, password):
     login_name = (login_name or "").strip()
     if not login_name or not password:
         raise ServiceError("Введите логин и пароль.")
-    row = conn.execute(_USER_SQL + " WHERE u.login = ?", (login_name,)).fetchone()
+    row = conn.execute(_USER_SQL + " WHERE lower(u.login) = lower(%s)", (login_name,)).fetchone()
     if row is None:
         _spend_time_like_real_check(password)
         raise ServiceError(LOGIN_ERROR)
@@ -121,7 +121,7 @@ def require_actor(conn, actor):
     """Проверяет, что пользователь существует, и берёт его роль заново из базы."""
     if actor is None:
         raise ServiceError(SESSION_ERROR)
-    row = conn.execute(_USER_SQL + " WHERE u.id = ?", (actor.user_id,)).fetchone()
+    row = conn.execute(_USER_SQL + " WHERE u.id = %s", (actor.user_id,)).fetchone()
     if row is None:
         raise ServiceError(SESSION_ERROR)
     return _actor_from_row(row)
@@ -137,7 +137,7 @@ def require_organizer(conn, actor):
 
 def login_exists(conn, login_name):
     return conn.execute(
-        "SELECT 1 FROM users WHERE login = ?", (login_name,)
+        "SELECT 1 FROM users WHERE lower(login) = lower(%s)", (login_name,)
     ).fetchone() is not None
 
 
@@ -148,10 +148,10 @@ def insert_user(conn, login_name, password_hash, role, player_id, now=None):
     ts = stamp(now)
     cur = conn.execute(
         "INSERT INTO users (login, password_hash, role, player_id, created_at, updated_at) "
-        "VALUES (?, ?, ?, ?, ?, ?)",
+        "VALUES (%s, %s, %s, %s, %s, %s) RETURNING id",
         (login_name, password_hash, role, player_id, ts, ts),
     )
-    return cur.lastrowid
+    return cur.fetchone()["id"]
 
 
 def create_organizer(conn, login_name, password, player_name=None, now=None):
@@ -167,9 +167,10 @@ def create_organizer(conn, login_name, password, player_name=None, now=None):
         if name:
             ts = stamp(now)
             player_id = conn.execute(
-                "INSERT INTO players (name, created_at, updated_at) VALUES (?, ?, ?)",
+                "INSERT INTO players (name, created_at, updated_at) "
+                "VALUES (%s, %s, %s) RETURNING id",
                 (name, ts, ts),
-            ).lastrowid
+            ).fetchone()["id"]
         return insert_user(conn, login_name, password_hash, ROLE_ORGANIZER, player_id, now)
 
 
@@ -178,7 +179,7 @@ def set_password(conn, user_id, new_password, now=None):
     password_hash = hash_password(new_password)
     with transaction(conn):
         cur = conn.execute(
-            "UPDATE users SET password_hash = ?, updated_at = ? WHERE id = ?",
+            "UPDATE users SET password_hash = %s, updated_at = %s WHERE id = %s",
             (password_hash, stamp(now), user_id),
         )
         if cur.rowcount == 0:

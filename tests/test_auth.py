@@ -26,7 +26,7 @@ def test_empty_fields_rejected(conn, org):
 
 
 def test_password_is_not_stored_in_plain_text(conn, org):
-    stored = conn.execute("SELECT password_hash FROM users WHERE login = 'trener'").fetchone()[0]
+    stored = conn.execute("SELECT password_hash FROM users WHERE login = 'trener'").fetchone()["password_hash"]
     assert "pass-org" not in stored
     assert stored.startswith("$2")
 
