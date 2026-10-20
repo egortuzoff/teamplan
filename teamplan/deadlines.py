@@ -16,7 +16,7 @@ def _not_answered(conn, event_id):
     """Имена игроков без отметки явки, по алфавиту."""
     rows = conn.execute(
         "SELECT name FROM players WHERE id NOT IN "
-        "(SELECT player_id FROM attendance WHERE event_id = ?)",
+        "(SELECT player_id FROM attendance WHERE event_id = %s)",
         (event_id,),
     ).fetchall()
     return sorted((r["name"] for r in rows), key=str.casefold)
@@ -69,5 +69,5 @@ def _games_without_score(conn, now):
 
 def check_deadlines(conn, now=None):
     """Создаёт уведомления FR-53 и FR-54, которые ещё не созданы. Возвращает их число."""
-    with transaction(conn, immediate=True):
+    with transaction(conn, serialized=True):
         return _overdue_replies(conn, now) + _games_without_score(conn, now)

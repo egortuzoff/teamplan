@@ -1,21 +1,48 @@
 # Запуск: docker compose up --build
-# Остановка: Ctrl+C или docker compose down
+# Остановка: Ctrl+C или docker compose down (данные сохраняются)
 # Чистая база: docker compose down -v
+#
+# Файл .env не обязателен: без него используются значения демонстрационного
+# режима (НТ-6). В рабочем режиме настоящие значения задаются в .env на сервере
+# (образец — .env.example).
 services:
+  db:
+    image: postgres:17
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-teamplan}
+      POSTGRES_USER: ${POSTGRES_USER:-teamplan}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-teamplan-demo}
+    ports:
+      # Только с этого компьютера: для запуска приложения и тестов без Docker.
+      # Из сети и из интернета порт недоступен.
+      - "127.0.0.1:${DB_PORT:-5432}:5432"
+    volumes:
+      # ТП-4: данные PostgreSQL в томе Docker, сохраняются при пересоздании контейнеров.
+      - teamplan-pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U \"$${POSTGRES_USER}\" -d \"$${POSTGRES_DB}\""]
+      interval: 2s
+      timeout: 5s
+      retries: 30
+    restart: unless-stopped
+
   teamplan:
     build: .
     image: teamplan
+    depends_on:
+      db:
+        condition: service_healthy
     ports:
       # ТБ-6: приложение доступно только с этого компьютера.
       - "127.0.0.1:8501:8501"
     environment:
-      TEAMPLAN_DB: /data/teamplan.db
+      # ТР-7: адрес базы — одна переменная. По умолчанию — контейнер db
+      # с паролем демонстрационного режима.
+      DATABASE_URL: ${DATABASE_URL:-postgresql://${POSTGRES_USER:-teamplan}:${POSTGRES_PASSWORD:-teamplan-demo}@db:5432/${POSTGRES_DB:-teamplan}}
       # Часовой пояс команды: от него зависят проверки «событие началось»
       # и «срок в прошлом». По умолчанию Москва, можно задать переменной TZ.
       TZ: ${TZ:-Europe/Moscow}
-    volumes:
-      - teamplan-data:/data
     restart: unless-stopped
 
 volumes:
-  teamplan-data:
+  teamplan-pgdata:

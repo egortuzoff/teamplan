@@ -19,4 +19,6 @@ data/
 *.sqlite
 *.sqlite3
 .env
+.env.example
+.claude/
 secrets.toml

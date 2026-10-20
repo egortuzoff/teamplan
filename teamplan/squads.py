@@ -23,7 +23,7 @@ def _squad_players(conn, event_id):
     rows = conn.execute(
         "SELECT p.id, p.name, p.number, p.position "
         "FROM squad_players sp JOIN players p ON p.id = sp.player_id "
-        "WHERE sp.event_id = ?",
+        "WHERE sp.event_id = %s",
         (event_id,),
     ).fetchall()
     result = [dict(r) for r in rows]
@@ -32,7 +32,7 @@ def _squad_players(conn, event_id):
 
 
 def _squad_state(conn, event_id):
-    row = conn.execute("SELECT state FROM squads WHERE event_id = ?", (event_id,)).fetchone()
+    row = conn.execute("SELECT state FROM squads WHERE event_id = %s", (event_id,)).fetchone()
     return row["state"] if row else "none"
 
 
@@ -59,7 +59,7 @@ def _normalize_ids(conn, player_ids):
         if value not in ids:
             ids.append(value)
     for player_id in ids:
-        if conn.execute("SELECT 1 FROM players WHERE id = ?", (player_id,)).fetchone() is None:
+        if conn.execute("SELECT 1 FROM players WHERE id = %s", (player_id,)).fetchone() is None:
             raise ServiceError("Игрок не найден.")
     return ids
 
@@ -68,7 +68,7 @@ def _check_scorers_stay(conn, event_id, ids):
     """Игрока с голом или передачей в этой игре нельзя убрать из состава (FR-29)."""
     rows = conn.execute(
         "SELECT DISTINCT p.id, p.name FROM goals g JOIN players p "
-        "ON p.id = g.scorer_id OR p.id = g.assist_id WHERE g.event_id = ?",
+        "ON p.id = g.scorer_id OR p.id = g.assist_id WHERE g.event_id = %s",
         (event_id,),
     ).fetchall()
     removed = sorted(r["name"] for r in rows if r["id"] not in ids)
@@ -117,16 +117,16 @@ def save_squad(conn, actor, event_id, player_ids, now=None):
         if state == "none":
             conn.execute(
                 "INSERT INTO squads (event_id, state, created_at, updated_at) "
-                "VALUES (?, 'draft', ?, ?)",
+                "VALUES (%s, 'draft', %s, %s)",
                 (event_id, ts, ts),
             )
         else:
             conn.execute(
-                "UPDATE squads SET updated_at = ? WHERE event_id = ?", (ts, event_id)
+                "UPDATE squads SET updated_at = %s WHERE event_id = %s", (ts, event_id)
             )
-        conn.execute("DELETE FROM squad_players WHERE event_id = ?", (event_id,))
-        conn.executemany(
-            "INSERT INTO squad_players (event_id, player_id) VALUES (?, ?)",
+        conn.execute("DELETE FROM squad_players WHERE event_id = %s", (event_id,))
+        conn.cursor().executemany(
+            "INSERT INTO squad_players (event_id, player_id) VALUES (%s, %s)",
             [(event_id, player_id) for player_id in ids],
         )
         if state == "published" and set(ids) != set(old_ids):
@@ -151,7 +151,7 @@ def publish_squad(conn, actor, event_id, now=None):
         raise ServiceError("Нельзя опубликовать пустой состав: выберите хотя бы одного игрока.")
     with transaction(conn):
         conn.execute(
-            "UPDATE squads SET state = 'published', updated_at = ? WHERE event_id = ?",
+            "UPDATE squads SET state = 'published', updated_at = %s WHERE event_id = %s",
             (stamp(now), event_id),
         )
         notifications.notify(

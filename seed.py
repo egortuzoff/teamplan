@@ -1,19 +1,20 @@
 """Создаёт тестовые данные (п. 7.3 ТЗ): организатора, трёх вымышленных игроков и события.
 
 Запуск:   python seed.py
-Заново:   python seed.py --reset   (удаляет файл базы и создаёт данные с нуля)
+Заново:   python seed.py --reset   (удаляет все данные из базы и создаёт тестовые с нуля)
+
+База задаётся переменной окружения DATABASE_URL (см. README).
 
 Все имена, логины и пароли вымышленные. Даты событий считаются от сегодняшнего дня.
 Сыгранная игра со счётом 2:1 и игра без счёта создаются в прошлом: такое возможно
 только здесь, в интерфейсе событие в прошлом создать нельзя.
 """
 import argparse
-import os
 import sys
 from datetime import datetime, time, timedelta
 
 from teamplan import attendance, auth, events, players, results, squads
-from teamplan.db import connect, get_db_path
+from teamplan.db import clear, connect
 from teamplan.errors import ServiceError
 
 ORGANIZER = {"login": "trener", "password": "trener-demo-1"}
@@ -86,7 +87,7 @@ TOP_UP_GAMES = [
 
 
 def _player_id(conn, login_name):
-    row = conn.execute("SELECT player_id FROM users WHERE login = ?", (login_name,)).fetchone()
+    row = conn.execute("SELECT player_id FROM users WHERE lower(login) = lower(%s)", (login_name,)).fetchone()
     return row["player_id"] if row else None
 
 
@@ -99,7 +100,7 @@ def top_up(conn):
     """
     missing = [
         (title, func) for title, func in TOP_UP_GAMES
-        if not conn.execute("SELECT 1 FROM events WHERE title = ?", (title,)).fetchone()
+        if not conn.execute("SELECT 1 FROM events WHERE title = %s", (title,)).fetchone()
     ]
     if not missing:
         return []
@@ -119,14 +120,16 @@ def top_up(conn):
 
 def main():
     parser = argparse.ArgumentParser(description="Тестовые данные TeamPlan")
-    parser.add_argument("--reset", action="store_true", help="удалить базу и создать данные заново")
+    parser.add_argument("--reset", action="store_true", help="удалить все данные из базы и создать тестовые заново")
     args = parser.parse_args()
 
-    db_path = get_db_path()
-    if args.reset and os.path.exists(db_path):
-        os.remove(db_path)
-
-    conn = connect()
+    try:
+        conn = connect()
+    except RuntimeError as exc:  # не задан DATABASE_URL
+        print(exc)
+        return 1
+    if args.reset:
+        clear(conn)
     if conn.execute("SELECT 1 FROM users LIMIT 1").fetchone():
         added = top_up(conn)
         if added:

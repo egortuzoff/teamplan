@@ -1,13 +1,13 @@
 """Уведомления организатору (FR-52 – FR-55, AC-20)."""
-import sqlite3
 import threading
 from datetime import datetime, time, timedelta
 
+import psycopg
 import pytest
 
 from conftest import notes
 from teamplan import attendance, auth, deadlines, events, notifications, results
-from teamplan.db import connect
+from teamplan.db import connect, transaction
 from teamplan.errors import ServiceError
 
 
@@ -188,17 +188,17 @@ def test_cancelled_events_no_notifications(conn, org, p1, mk_event, now):
 
 def test_database_rejects_duplicate(conn, org, played_game, now):
     deadlines.check_deadlines(conn, now=now)
-    user_id = conn.execute("SELECT id FROM users WHERE login = 'trener'").fetchone()[0]
-    with pytest.raises(sqlite3.IntegrityError):
+    user_id = conn.execute("SELECT id FROM users WHERE login = 'trener'").fetchone()["id"]
+    with pytest.raises(psycopg.errors.UniqueViolation):
         conn.execute(
             "INSERT INTO notifications (user_id, event_id, kind, text, created_at) "
-            "VALUES (?, ?, 'no_score', 'дубль', 't')", (user_id, played_game),
+            "VALUES (%s, %s, 'no_score', 'дубль', 't')", (user_id, played_game),
         )
 
 
-def test_concurrent_checks_create_one_notification(tmp_path, now):
+def test_concurrent_checks_create_one_notification(database_url, now):
     """Несколько страниц проверяют сроки одновременно — запись одна."""
-    path = str(tmp_path / "team.db")
+    path = database_url
     conn = connect(path)
     auth.create_organizer(conn, "trener", "pass-org")
     org = auth.login(conn, "trener", "pass-org")
@@ -227,6 +227,44 @@ def test_concurrent_checks_create_one_notification(tmp_path, now):
     assert errors == []
     conn = connect(path)
     try:
-        assert conn.execute("SELECT COUNT(*) FROM notifications").fetchone()[0] == 1
+        assert conn.execute("SELECT COUNT(*) AS n FROM notifications").fetchone()["n"] == 1
     finally:
         conn.close()
+
+
+def test_unique_index_blocks_duplicate_from_parallel_transaction(database_url, now):
+    """FR-55 без очереди проверок: вторая вставка ждёт первую транзакцию и пропускается.
+
+    Две транзакции одновременно вставляют «внесите счёт» на одну игру. Пока первая
+    не завершена, вторая ждёт на уникальном индексе notifications_once; после
+    фиксации первой вторая ничего не создаёт (ON CONFLICT ... DO NOTHING).
+    """
+    first = connect(database_url)
+    second = connect(database_url)
+    try:
+        auth.create_organizer(first, "trener", "pass-org")
+        org = auth.login(first, "trener", "pass-org")
+        game = events.create_event(first, org, "game", "Игра", now.date() - timedelta(days=1),
+                                   time(19, 0), now=now - timedelta(days=7))
+        created = {}
+
+        def insert_second():
+            with transaction(second):
+                created["second"] = notifications.notify_organizers(
+                    second, game, "no_score", "Внесите счёт", now)
+
+        with transaction(first):
+            created["first"] = notifications.notify_organizers(
+                first, game, "no_score", "Внесите счёт", now)
+            worker = threading.Thread(target=insert_second)
+            worker.start()
+            worker.join(timeout=1)
+            assert worker.is_alive()  # вторая транзакция ждёт первую
+        worker.join(timeout=10)
+        assert not worker.is_alive()
+        assert created == {"first": 1, "second": 0}
+        count = first.execute("SELECT COUNT(*) AS n FROM notifications").fetchone()["n"]
+        assert count == 1
+    finally:
+        first.close()
+        second.close()

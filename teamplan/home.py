@@ -66,7 +66,7 @@ def _my_marks(conn, player_id):
     return {
         r["event_id"]: r["status"]
         for r in conn.execute(
-            "SELECT event_id, status FROM attendance WHERE player_id = ?", (player_id,)
+            "SELECT event_id, status FROM attendance WHERE player_id = %s", (player_id,)
         )
     }
 

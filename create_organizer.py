@@ -1,6 +1,7 @@
 """Создаёт аккаунт организатора для реальной работы (без тестовых данных).
 
 Запуск: python create_organizer.py
+База задаётся переменной окружения DATABASE_URL, как у приложения (см. README).
 Пароль вводится скрыто и нигде не сохраняется в открытом виде.
 """
 import getpass
@@ -18,7 +19,11 @@ def main():
     if password != repeat:
         print("Пароли не совпадают.")
         return 1
-    conn = connect()
+    try:
+        conn = connect()
+    except RuntimeError as exc:  # не задан DATABASE_URL
+        print(exc)
+        return 1
     try:
         auth.create_organizer(conn, login_name, password)
     except ServiceError as exc:

@@ -32,7 +32,7 @@ def squad_player_ids(conn, event_id):
     return [
         r["player_id"]
         for r in conn.execute(
-            "SELECT player_id FROM squad_players WHERE event_id = ?", (event_id,)
+            "SELECT player_id FROM squad_players WHERE event_id = %s", (event_id,)
         )
     ]
 
@@ -45,7 +45,7 @@ def event_audience(conn, row):
     """
     if row["type"] == "game":
         state = conn.execute(
-            "SELECT state FROM squads WHERE event_id = ?", (row["id"],)
+            "SELECT state FROM squads WHERE event_id = %s", (row["id"],)
         ).fetchone()
         if state is None or state["state"] != "published":
             return []
@@ -53,7 +53,7 @@ def event_audience(conn, row):
     return [
         r["player_id"]
         for r in conn.execute(
-            "SELECT player_id FROM attendance WHERE event_id = ?", (row["id"],)
+            "SELECT player_id FROM attendance WHERE event_id = %s", (row["id"],)
         )
     ]
 
@@ -67,14 +67,14 @@ def notify(conn, actor, player_ids, event_id, kind, text, now=None):
     ts = stamp(now)
     for player_id in dict.fromkeys(player_ids):
         user = conn.execute(
-            "SELECT id FROM users WHERE player_id = ?", (player_id,)
+            "SELECT id FROM users WHERE player_id = %s", (player_id,)
         ).fetchone()
         if user is None or user["id"] == actor.user_id:
             continue
         message = text(player_id) if callable(text) else text
         conn.execute(
             "INSERT INTO notifications (user_id, event_id, kind, text, created_at) "
-            "VALUES (?, ?, ?, ?, ?)",
+            "VALUES (%s, %s, %s, %s, %s)",
             (user["id"], event_id, kind, message, ts),
         )
 
@@ -96,7 +96,7 @@ def notify_organizers(conn, event_id, kind, text, now=None):
     for user_id in organizer_user_ids(conn):
         cur = conn.execute(
             "INSERT INTO notifications (user_id, event_id, kind, text, created_at) "
-            "VALUES (?, ?, ?, ?, ?) "
+            "VALUES (%s, %s, %s, %s, %s) "
             "ON CONFLICT (kind, event_id, user_id) "
             "WHERE kind IN ('reply_overdue', 'no_score') DO NOTHING",
             (user_id, event_id, kind, text, stamp(now)),
@@ -110,7 +110,7 @@ def list_notifications(conn, actor):
     fresh = auth.require_actor(conn, actor)
     rows = conn.execute(
         "SELECT id, event_id, kind, text, created_at, read_at FROM notifications "
-        "WHERE user_id = ? ORDER BY id DESC LIMIT ?",
+        "WHERE user_id = %s ORDER BY id DESC LIMIT %s",
         (fresh.user_id, FEED_LIMIT),
     ).fetchall()
     result = []
@@ -126,23 +126,23 @@ def unread_count(conn, actor):
     """Число непрочитанных уведомлений пользователя (FR-39)."""
     fresh = auth.require_actor(conn, actor)
     return conn.execute(
-        "SELECT COUNT(*) FROM notifications WHERE user_id = ? AND read_at IS NULL",
+        "SELECT COUNT(*) AS n FROM notifications WHERE user_id = %s AND read_at IS NULL",
         (fresh.user_id,),
-    ).fetchone()[0]
+    ).fetchone()["n"]
 
 
 def mark_read(conn, actor, notification_id, now=None):
     """Открытие уведомления делает его прочитанным (FR-40). Только своё (FR-36)."""
     fresh = auth.require_actor(conn, actor)
     row = conn.execute(
-        "SELECT id FROM notifications WHERE id = ? AND user_id = ?",
+        "SELECT id FROM notifications WHERE id = %s AND user_id = %s",
         (notification_id, fresh.user_id),
     ).fetchone()
     if row is None:
         raise ServiceError("Уведомление не найдено.")
     with transaction(conn):
         conn.execute(
-            "UPDATE notifications SET read_at = ? WHERE id = ? AND read_at IS NULL",
+            "UPDATE notifications SET read_at = %s WHERE id = %s AND read_at IS NULL",
             (stamp(now), notification_id),
         )
 
@@ -152,6 +152,6 @@ def mark_all_read(conn, actor, now=None):
     fresh = auth.require_actor(conn, actor)
     with transaction(conn):
         conn.execute(
-            "UPDATE notifications SET read_at = ? WHERE user_id = ? AND read_at IS NULL",
+            "UPDATE notifications SET read_at = %s WHERE user_id = %s AND read_at IS NULL",
             (stamp(now), fresh.user_id),
         )

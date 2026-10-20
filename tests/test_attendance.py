@@ -33,7 +33,7 @@ def test_new_mark_replaces_the_old_one(conn, p1, mk_event, now):
     attendance.set_attendance(conn, p1, event_id, p1.player_id, "no", now=now)
     summary = attendance.attendance_summary(conn, p1, event_id, now=now)
     assert summary["counts"]["yes"] == 0 and summary["counts"]["no"] == 1
-    assert conn.execute("SELECT COUNT(*) FROM attendance").fetchone()[0] == 1
+    assert conn.execute("SELECT COUNT(*) AS n FROM attendance").fetchone()["n"] == 1
 
 
 def test_mark_cannot_be_changed_after_start(conn, p1, mk_event, now):

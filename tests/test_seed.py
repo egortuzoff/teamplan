@@ -9,20 +9,19 @@ from teamplan.db import connect
 
 
 @pytest.fixture
-def db_path(tmp_path, monkeypatch):
-    path = str(tmp_path / "seed.db")
-    monkeypatch.setenv("TEAMPLAN_DB", path)
+def db_url(database_url, monkeypatch):
+    """Пустая база тестов (conftest.py): seed.py подключается к ней по DATABASE_URL."""
     monkeypatch.setattr(sys, "argv", ["seed.py"])
-    return path
+    return database_url
 
 
 def _played_game(conn, actor):
     return next(e for e in events.list_events(conn, actor) if e["title"] == seed.PLAYED_GAME_TITLE)
 
 
-def test_seed_creates_played_game_and_stats_match_manual_count(db_path):
+def test_seed_creates_played_game_and_stats_match_manual_count(db_url):
     assert seed.main() == 0
-    conn = connect(db_path)
+    conn = connect(db_url)
     try:
         player = auth.login(conn, "igrok3", "igrok3-demo")
         game = _played_game(conn, player)
@@ -55,10 +54,10 @@ def test_seed_creates_played_game_and_stats_match_manual_count(db_path):
         conn.close()
 
 
-def test_seed_data_for_home_screens(db_path):
+def test_seed_data_for_home_screens(db_url):
     """Тестовые данные для проверки главного экрана (AC-19)."""
     seed.main()
-    conn = connect(db_path)
+    conn = connect(db_url)
     try:
         first = auth.login(conn, "igrok1", "igrok1-demo")
         data = home.player_home(conn, first)
@@ -82,19 +81,19 @@ def test_seed_data_for_home_screens(db_path):
         conn.close()
 
 
-def test_seed_tops_up_previous_version_with_home_games(db_path, monkeypatch):
+def test_seed_tops_up_previous_version_with_home_games(db_url, monkeypatch):
     with monkeypatch.context() as m:  # база версии 0.6: без игр для главного экрана
         m.setattr(seed, "add_draft_game", lambda *args: None)
         m.setattr(seed, "add_no_score_game", lambda *args: None)
         seed.main()
-    conn = connect(db_path)
+    conn = connect(db_url)
     org = auth.login(conn, "trener", "trener-demo-1")
     before = len(events.list_events(conn, org))
     conn.close()
 
     seed.main()
     seed.main()  # повторный запуск ничего не добавляет
-    conn = connect(db_path)
+    conn = connect(db_url)
     try:
         titles = [e["title"] for e in events.list_events(conn, org)]
         assert len(titles) == before + 2
@@ -103,18 +102,18 @@ def test_seed_tops_up_previous_version_with_home_games(db_path, monkeypatch):
         conn.close()
 
 
-def test_seed_tops_up_stage1_test_data_once(db_path, monkeypatch):
+def test_seed_tops_up_stage1_test_data_once(db_url, monkeypatch):
     with monkeypatch.context() as m:
         m.setattr(seed, "add_played_game", lambda *args: None)  # база этапа 1
         seed.main()
-    conn = connect(db_path)
+    conn = connect(db_url)
     org = auth.login(conn, "trener", "trener-demo-1")
     before = len(events.list_events(conn, org))
     conn.close()
 
     seed.main()
     seed.main()  # повторный запуск ничего не добавляет
-    conn = connect(db_path)
+    conn = connect(db_url)
     try:
         evs = events.list_events(conn, org)
         assert len(evs) == before + 1
@@ -123,14 +122,14 @@ def test_seed_tops_up_stage1_test_data_once(db_path, monkeypatch):
         conn.close()
 
 
-def test_seed_does_not_touch_foreign_data(db_path):
-    conn = connect(db_path)
+def test_seed_does_not_touch_foreign_data(db_url):
+    conn = connect(db_url)
     auth.create_organizer(conn, "real-boss", "real-pass")
     conn.close()
     seed.main()
-    conn = connect(db_path)
+    conn = connect(db_url)
     try:
-        assert conn.execute("SELECT COUNT(*) FROM events").fetchone()[0] == 0
-        assert conn.execute("SELECT COUNT(*) FROM users").fetchone()[0] == 1
+        assert conn.execute("SELECT COUNT(*) AS n FROM events").fetchone()["n"] == 0
+        assert conn.execute("SELECT COUNT(*) AS n FROM users").fetchone()["n"] == 1
     finally:
         conn.close()
