@@ -1,290 +1,279 @@
-"""Обновление базы старого формата (ТЗ 0.1: тип camp, нет времени сбора)."""
-import sqlite3
+"""Схема базы PostgreSQL: ограничения, внешние ключи, логин без учёта регистра (ТР-2, ТР-7)."""
+import threading
 
+import psycopg
 import pytest
+from psycopg import errors, sql
+from psycopg.conninfo import conninfo_to_dict, make_conninfo
 
-from teamplan import attendance, auth, events, squads
-from teamplan.db import connect
-
-# Таблицы в том виде, в каком их создавала версия приложения по ТЗ 0.1.
-OLD_SCHEMA = """
-CREATE TABLE players (
-    id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT NOT NULL, number INTEGER,
-    position TEXT, created_at TEXT NOT NULL, updated_at TEXT NOT NULL
-);
-CREATE TABLE users (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    login TEXT NOT NULL UNIQUE COLLATE NOCASE, password_hash TEXT NOT NULL,
-    role TEXT NOT NULL CHECK (role IN ('organizer', 'player')),
-    player_id INTEGER UNIQUE REFERENCES players(id) ON DELETE SET NULL,
-    created_at TEXT NOT NULL, updated_at TEXT NOT NULL,
-    CHECK (role = 'organizer' OR player_id IS NOT NULL)
-);
-CREATE TABLE events (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    type TEXT NOT NULL CHECK (type IN ('training', 'camp', 'game')),
-    title TEXT NOT NULL, date TEXT NOT NULL, time TEXT NOT NULL, place TEXT,
-    status TEXT NOT NULL DEFAULT 'planned' CHECK (status IN ('planned', 'cancelled')),
-    reply_by TEXT, created_at TEXT NOT NULL, updated_at TEXT NOT NULL
-);
-CREATE TABLE attendance (
-    event_id INTEGER NOT NULL REFERENCES events(id) ON DELETE CASCADE,
-    player_id INTEGER NOT NULL REFERENCES players(id) ON DELETE CASCADE,
-    status TEXT NOT NULL CHECK (status IN ('yes', 'no', 'maybe')),
-    updated_at TEXT NOT NULL, PRIMARY KEY (event_id, player_id)
-);
-CREATE TABLE squads (
-    event_id INTEGER PRIMARY KEY REFERENCES events(id) ON DELETE CASCADE,
-    state TEXT NOT NULL CHECK (state IN ('draft', 'published')),
-    created_at TEXT NOT NULL, updated_at TEXT NOT NULL
-);
-CREATE TABLE squad_players (
-    event_id INTEGER NOT NULL REFERENCES squads(event_id) ON DELETE CASCADE,
-    player_id INTEGER NOT NULL REFERENCES players(id) ON DELETE RESTRICT,
-    PRIMARY KEY (event_id, player_id)
-);
-"""
+from teamplan import auth, events, players
+from teamplan.db import NO_DATABASE_URL, TABLES, clear, connect, transaction
+from teamplan.errors import ServiceError
 
 TS = "2026-10-01 10:00:00"
 
 
-@pytest.fixture
-def old_db(tmp_path):
-    """Файл базы старого формата: игрок, сбор с отметкой и игра с составом."""
-    path = str(tmp_path / "old.db")
-    old = sqlite3.connect(path)
-    old.executescript(OLD_SCHEMA)
-    old.execute("INSERT INTO players VALUES (1, 'Игрок Первый', 10, NULL, ?, ?)", (TS, TS))
-    old.execute(
-        "INSERT INTO users VALUES (1, 'igrok1', ?, 'player', 1, ?, ?)",
-        (auth.hash_password("pass-igrok1"), TS, TS),
-    )
-    old.execute(
-        "INSERT INTO events VALUES (1, 'camp', 'Выездной сбор', '2026-11-10', '10:00', "
-        "'База', 'planned', '2026-11-09 18:00', ?, ?)", (TS, TS),
-    )
-    old.execute(
-        "INSERT INTO events VALUES (2, 'game', 'Игра', '2026-11-12', '19:30', "
-        "'Стадион', 'planned', NULL, ?, ?)", (TS, TS),
-    )
-    old.execute("INSERT INTO attendance VALUES (1, 1, 'yes', ?)", (TS,))
-    old.execute("INSERT INTO squads VALUES (2, 'published', ?, ?)", (TS, TS))
-    old.execute("INSERT INTO squad_players VALUES (2, 1)")
-    old.commit()
-    old.close()
-    return path
+def _count(conn, table):
+    return conn.execute(f"SELECT COUNT(*) AS n FROM {table}").fetchone()["n"]
 
 
-def test_old_database_is_upgraded_without_data_loss(old_db, now):
-    conn = connect(old_db)
-    try:
-        player = auth.login(conn, "igrok1", "pass-igrok1")
-        camp = events.get_event(conn, player, 1)
-        assert camp["type"] == "activity"
-        assert camp["type_label"] == "Мероприятие"
-        assert camp["title"] == "Выездной сбор"
-        assert camp["reply_by"] == "2026-11-09 18:00"
-        assert camp["gather_time"] is None
-        assert camp["opponent"] is None
-        assert events.get_event(conn, player, 2)["type"] == "game"
-
-        summary = attendance.attendance_summary(conn, player, 1, now=now)
-        assert summary["marks"] == {1: "yes"}
-        squad = squads.get_squad(conn, player, 2)
-        assert squad["state"] == "published"
-        assert [p["id"] for p in squad["players"]] == [1]
-    finally:
-        conn.close()
+def _insert_event(conn, event_type="training"):
+    return conn.execute(
+        "INSERT INTO events (type, title, date, time, created_at, updated_at) "
+        "VALUES (%s, 'Т', '2026-11-10', '10:00', %s, %s) RETURNING id",
+        (event_type, TS, TS),
+    ).fetchone()["id"]
 
 
-def test_upgraded_database_keeps_constraints(old_db):
-    connect(old_db).close()
-    conn = connect(old_db)  # повторный запуск ничего не меняет
-    try:
-        assert conn.execute("SELECT type FROM events WHERE id = 1").fetchone()[0] == "activity"
-        with pytest.raises(sqlite3.IntegrityError):
-            conn.execute(
-                "INSERT INTO events (type, title, date, time, created_at, updated_at) "
-                "VALUES ('camp', 'Т', '2026-11-10', '10:00', 't', 't')"
-            )
-        # Внешние ключи работают: удаление события удаляет отметки и состав.
-        conn.execute("DELETE FROM events")
-        for table in ("attendance", "squads", "squad_players"):
-            assert conn.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0] == 0
-    finally:
-        conn.close()
+def _insert_player(conn, name="Игрок"):
+    return conn.execute(
+        "INSERT INTO players (name, created_at, updated_at) VALUES (%s, %s, %s) RETURNING id",
+        (name, TS, TS),
+    ).fetchone()["id"]
 
 
-# ---------- обновление базы этапа 1 (ТЗ 0.2) до этапа 2 ----------
+# ---------- создание схемы ----------
 
-# Таблицы в том виде, в каком их создавала версия этапа 1 (ТЗ 0.2):
-# без результатов, голов и уведомлений.
-STAGE1_SCHEMA = OLD_SCHEMA.replace(
-    "type TEXT NOT NULL CHECK (type IN ('training', 'camp', 'game')),\n"
-    "    title TEXT NOT NULL, date TEXT NOT NULL, time TEXT NOT NULL, place TEXT,",
-    "type TEXT NOT NULL CHECK (type IN ('training', 'game', 'activity')),\n"
-    "    title TEXT NOT NULL, date TEXT NOT NULL, time TEXT NOT NULL, gather_time TEXT,\n"
-    "    place TEXT,",
-)
+def test_schema_has_all_tables(conn):
+    rows = conn.execute(
+        "SELECT table_name FROM information_schema.tables WHERE table_schema = current_schema()"
+    ).fetchall()
+    assert set(TABLES) <= {r["table_name"] for r in rows}
 
 
-@pytest.fixture
-def stage1_db(tmp_path):
-    """База этапа 1: игрок, организатор, тренировка с отметкой и прошедшая игра с составом."""
-    path = str(tmp_path / "stage1.db")
-    old = sqlite3.connect(path)
-    old.executescript(STAGE1_SCHEMA)
-    old.execute("INSERT INTO players VALUES (1, 'Игрок Первый', 10, NULL, ?, ?)", (TS, TS))
-    old.execute(
-        "INSERT INTO users VALUES (1, 'igrok1', ?, 'player', 1, ?, ?)",
-        (auth.hash_password("pass-igrok1"), TS, TS),
-    )
-    old.execute(
-        "INSERT INTO users VALUES (2, 'trener', ?, 'organizer', NULL, ?, ?)",
-        (auth.hash_password("pass-org"), TS, TS),
-    )
-    old.execute(
-        "INSERT INTO events (id, type, title, date, time, gather_time, place, status, "
-        "reply_by, created_at, updated_at) VALUES (1, 'training', 'Тренировка', "
-        "'2026-11-10', '19:00', '18:30', 'Зал', 'planned', NULL, ?, ?)", (TS, TS),
-    )
-    old.execute(
-        "INSERT INTO events (id, type, title, date, time, gather_time, place, status, "
-        "reply_by, created_at, updated_at) VALUES (2, 'game', 'Игра', '2026-10-31', "
-        "'19:30', NULL, 'Стадион', 'planned', NULL, ?, ?)", (TS, TS),
-    )
-    old.execute("INSERT INTO attendance VALUES (1, 1, 'yes', ?)", (TS,))
-    old.execute("INSERT INTO squads VALUES (2, 'published', ?, ?)", (TS, TS))
-    old.execute("INSERT INTO squad_players VALUES (2, 1)")
-    old.commit()
-    old.close()
-    return path
+def test_repeated_connect_keeps_data(conn, database_url):
+    _insert_player(conn)
+    connect(database_url).close()
+    assert _count(conn, "players") == 1
 
 
-def test_stage1_database_gets_new_tables_without_data_loss(stage1_db, now):
-    from teamplan import notifications, results
+def test_simultaneous_first_connects_create_schema_once(conn, database_url):
+    """Несколько страниц открылись одновременно на пустой базе — схема создаётся без ошибок."""
+    conn.execute(sql.SQL("DROP TABLE {} CASCADE").format(
+        sql.SQL(", ").join(sql.Identifier(t) for t in TABLES)
+    ))
+    barrier = threading.Barrier(4)
+    failures = []
 
-    conn = connect(stage1_db)
-    try:
-        tables = {r[0] for r in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")}
-        assert {"results", "goals", "notifications"} <= tables
+    def page():
+        try:
+            barrier.wait()
+            connect(database_url).close()
+        except Exception as exc:
+            failures.append(exc)
 
-        org = auth.login(conn, "trener", "pass-org")
-        player = auth.login(conn, "igrok1", "pass-igrok1")
-        training = events.get_event(conn, player, 1)
-        assert (training["title"], training["gather_time"]) == ("Тренировка", "18:30")
-        assert attendance.attendance_summary(conn, player, 1, now=now)["marks"] == {1: "yes"}
-        assert [p["id"] for p in squads.get_squad(conn, player, 2)["players"]] == [1]
-
-        # Новые функции работают на обновлённой базе.
-        results.save_result(conn, org, 2, 1, 0, [(1, None)], now=now)
-        assert results.player_stats(conn, player)[0]["goals"] == 1
-        assert notifications.unread_count(conn, player) == 1
-    finally:
-        conn.close()
-
-    conn = connect(stage1_db)  # повторный запуск сохраняет данные этапа 2
-    try:
-        assert conn.execute("SELECT our_score FROM results WHERE event_id = 2").fetchone()[0] == 1
-        assert conn.execute("SELECT COUNT(*) FROM notifications").fetchone()[0] == 1
-    finally:
-        conn.close()
+    threads = [threading.Thread(target=page) for _ in range(4)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+    assert failures == []
+    assert _count(conn, "notifications") == 0
 
 
-# ---------- поле «Соперник» (ТЗ 0.6) в базе прежней версии ----------
+def test_clear_removes_data_and_restarts_ids(conn):
+    _insert_player(conn)
+    clear(conn)
+    assert _count(conn, "players") == 0
+    assert _insert_player(conn) == 1
 
-def test_opponent_column_is_added_without_data_loss(stage1_db, now):
-    """В базе без поля «Соперник» оно добавляется при запуске, данные сохраняются."""
-    old = sqlite3.connect(stage1_db)
-    assert "opponent" not in {r[1] for r in old.execute("PRAGMA table_info(events)")}
-    old.close()
 
-    conn = connect(stage1_db)
-    try:
-        assert "opponent" in {r["name"] for r in conn.execute("PRAGMA table_info(events)")}
-        org = auth.login(conn, "trener", "pass-org")
-        player = auth.login(conn, "igrok1", "pass-igrok1")
-        game = events.get_event(conn, player, 2)
-        assert (game["title"], game["place"], game["opponent"]) == ("Игра", "Стадион", None)
-        assert events.get_event(conn, player, 1)["gather_time"] == "18:30"
-        assert attendance.attendance_summary(conn, player, 1, now=now)["marks"] == {1: "yes"}
-        assert [p["id"] for p in squads.get_squad(conn, player, 2)["players"]] == [1]
-        events.update_event(conn, org, 2, game["title"], game["date"], game["time"],
-                            game["place"], now=now, opponent="Байкальские соколы")
-    finally:
-        conn.close()
+# ---------- ограничения CHECK ----------
 
-    conn = connect(stage1_db)  # повторный запуск не трогает столбец и данные
-    try:
-        assert conn.execute("SELECT opponent FROM events WHERE id = 2").fetchone()[0] == (
-            "Байкальские соколы"
+@pytest.mark.parametrize("sql_text, params", [
+    ("INSERT INTO events (type, title, date, time, created_at, updated_at) "
+     "VALUES ('camp', 'Т', '2026-11-10', '10:00', %s, %s)", (TS, TS)),
+    ("INSERT INTO events (type, title, date, time, status, created_at, updated_at) "
+     "VALUES ('game', 'Т', '2026-11-10', '10:00', 'done', %s, %s)", (TS, TS)),
+    ("INSERT INTO users (login, password_hash, role, created_at, updated_at) "
+     "VALUES ('x', 'h', 'admin', %s, %s)", (TS, TS)),
+    # Игрок без связанной карточки игрока.
+    ("INSERT INTO users (login, password_hash, role, created_at, updated_at) "
+     "VALUES ('x', 'h', 'player', %s, %s)", (TS, TS)),
+])
+def test_check_constraints(conn, sql_text, params):
+    with pytest.raises(errors.CheckViolation):
+        conn.execute(sql_text, params)
+
+
+def test_check_constraints_on_results_goals_and_notifications(conn):
+    event_id = _insert_event(conn, "game")
+    player_id = _insert_player(conn)
+    with pytest.raises(errors.CheckViolation):
+        conn.execute(
+            "INSERT INTO results (event_id, our_score, their_score, created_at, updated_at) "
+            "VALUES (%s, -1, 0, %s, %s)", (event_id, TS, TS),
         )
-        assert conn.execute("SELECT COUNT(*) FROM events").fetchone()[0] == 2
-    finally:
-        conn.close()
-
-
-# ---------- уведомления организатору (ТЗ 0.8) в базе прежней версии ----------
-
-# Таблица уведомлений в том виде, в каком её создавала версия по ТЗ 0.7:
-# без видов уведомлений организатору и без защиты от дубликатов.
-STAGE2_NOTIFICATIONS = """
-CREATE TABLE notifications (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-    event_id INTEGER NOT NULL REFERENCES events(id) ON DELETE CASCADE,
-    kind TEXT NOT NULL CHECK (kind IN (
-        'moved', 'cancelled', 'squad_published', 'squad_changed', 'result')),
-    text TEXT NOT NULL, created_at TEXT NOT NULL, read_at TEXT
-);
-CREATE INDEX notifications_user ON notifications (user_id, id);
-"""
-
-
-def test_notifications_table_is_upgraded_without_data_loss(stage1_db, now):
-    """Уведомления прежней версии (и отметки о прочтении) сохраняются, новые виды работают."""
-    from teamplan import deadlines, notifications
-
-    old = sqlite3.connect(stage1_db)
-    old.executescript(STAGE2_NOTIFICATIONS)
-    old.execute(
-        "INSERT INTO notifications VALUES (5, 1, 1, 'moved', 'Перенос: тренировка', ?, ?)",
-        (TS, TS),
+    conn.execute(
+        "INSERT INTO results (event_id, our_score, their_score, created_at, updated_at) "
+        "VALUES (%s, 1, 0, %s, %s)", (event_id, TS, TS),
     )
-    old.execute(
-        "INSERT INTO notifications VALUES (6, 1, 2, 'result', 'Результат: 1:0', ?, NULL)", (TS,)
+    with pytest.raises(errors.CheckViolation):  # гол и передача одного игрока
+        conn.execute(
+            "INSERT INTO goals (event_id, scorer_id, assist_id) VALUES (%s, %s, %s)",
+            (event_id, player_id, player_id),
+        )
+    with pytest.raises(errors.CheckViolation):
+        conn.execute(
+            "INSERT INTO attendance (event_id, player_id, status, updated_at) "
+            "VALUES (%s, %s, 'late', %s)", (event_id, player_id, TS),
+        )
+    user_id = auth.create_organizer(conn, "trener", "pass-org")
+    with pytest.raises(errors.CheckViolation):
+        conn.execute(
+            "INSERT INTO notifications (user_id, event_id, kind, text, created_at) "
+            "VALUES (%s, %s, 'unknown', 'т', %s)", (user_id, event_id, TS),
+        )
+
+
+# ---------- внешние ключи ----------
+
+def test_foreign_keys_reject_missing_rows(conn):
+    with pytest.raises(errors.ForeignKeyViolation):
+        conn.execute(
+            "INSERT INTO attendance (event_id, player_id, status, updated_at) "
+            "VALUES (999, 999, 'yes', %s)", (TS,),
+        )
+
+
+def test_deleting_event_cascades(conn):
+    event_id = _insert_event(conn, "game")
+    player_id = _insert_player(conn)
+    conn.execute(
+        "INSERT INTO attendance (event_id, player_id, status, updated_at) "
+        "VALUES (%s, %s, 'yes', %s)", (event_id, player_id, TS),
     )
-    old.commit()
-    old.close()
+    conn.execute(
+        "INSERT INTO squads (event_id, state, created_at, updated_at) "
+        "VALUES (%s, 'published', %s, %s)", (event_id, TS, TS),
+    )
+    conn.execute(
+        "INSERT INTO squad_players (event_id, player_id) VALUES (%s, %s)", (event_id, player_id)
+    )
+    conn.execute("DELETE FROM events WHERE id = %s", (event_id,))
+    for table in ("attendance", "squads", "squad_players"):
+        assert _count(conn, table) == 0
 
-    conn = connect(stage1_db)
-    try:
-        player = auth.login(conn, "igrok1", "pass-igrok1")
-        org = auth.login(conn, "trener", "pass-org")
-        feed = notifications.list_notifications(conn, player)
-        assert [(n["id"], n["kind"], n["text"], n["is_read"]) for n in feed] == [
-            (6, "result", "Результат: 1:0", False),
-            (5, "moved", "Перенос: тренировка", True),
-        ]
-        # Прошедшая игра без счёта: одно уведомление организатору, повтор не создаётся.
-        assert deadlines.check_deadlines(conn, now=now) == 1
-        assert deadlines.check_deadlines(conn, now=now) == 0
-        assert [n["kind"] for n in notifications.list_notifications(conn, org)] == ["no_score"]
-        indexes = {r[1] for r in conn.execute("PRAGMA index_list(notifications)")}
-        assert {"notifications_user", "notifications_once"} <= indexes
-    finally:
-        conn.close()
 
-    conn = connect(stage1_db)  # повторный запуск ничего не меняет
+def test_event_with_result_and_scorer_cannot_be_deleted(conn):
+    event_id = _insert_event(conn, "game")
+    player_id = _insert_player(conn)
+    conn.execute(
+        "INSERT INTO results (event_id, our_score, their_score, created_at, updated_at) "
+        "VALUES (%s, 1, 0, %s, %s)", (event_id, TS, TS),
+    )
+    conn.execute(
+        "INSERT INTO goals (event_id, scorer_id) VALUES (%s, %s)", (event_id, player_id)
+    )
+    with pytest.raises(errors.ForeignKeyViolation):
+        conn.execute("DELETE FROM events WHERE id = %s", (event_id,))
+    with pytest.raises(errors.ForeignKeyViolation):
+        conn.execute("DELETE FROM players WHERE id = %s", (player_id,))
+
+
+def test_deleting_user_removes_notifications_and_player_keeps_user_link_null(conn):
+    org_id = auth.create_organizer(conn, "trener", "pass-org", player_name="Тренер Играющий")
+    event_id = _insert_event(conn)
+    conn.execute(
+        "INSERT INTO notifications (user_id, event_id, kind, text, created_at) "
+        "VALUES (%s, %s, 'moved', 'т', %s)", (org_id, event_id, TS),
+    )
+    player_id = conn.execute(
+        "SELECT player_id FROM users WHERE id = %s", (org_id,)
+    ).fetchone()["player_id"]
+    conn.execute("DELETE FROM players WHERE id = %s", (player_id,))
+    row = conn.execute("SELECT player_id FROM users WHERE id = %s", (org_id,)).fetchone()
+    assert row["player_id"] is None  # ON DELETE SET NULL
+    conn.execute("DELETE FROM users WHERE id = %s", (org_id,))
+    assert _count(conn, "notifications") == 0
+
+
+# ---------- логин без учёта регистра (FR-2, FR-4) ----------
+
+def test_login_is_unique_ignoring_case_in_database(conn):
+    auth.create_organizer(conn, "Trener", "pass-org")
+    with pytest.raises(errors.UniqueViolation):
+        conn.execute(
+            "INSERT INTO users (login, password_hash, role, created_at, updated_at) "
+            "VALUES ('TRENER', 'h', 'organizer', %s, %s)", (TS, TS),
+        )
+
+
+def test_login_ignores_case_in_service(conn):
+    auth.create_organizer(conn, "Trener", "pass-org")
+    assert auth.login(conn, "trener", "pass-org").login == "Trener"
+    assert auth.login(conn, "TRENER", "pass-org").login == "Trener"
+    org = auth.login(conn, "Trener", "pass-org")
+    with pytest.raises(ServiceError, match="Такой логин уже занят"):
+        players.create_player_account(conn, org, "Игрок", "trener", "pass-1")
+    with pytest.raises(ServiceError, match="Такой логин уже занят"):
+        auth.create_organizer(conn, "tReNeR", "pass-2")
+
+
+# ---------- транзакции (ТС-3) ----------
+
+def test_transaction_turns_database_errors_into_message(conn):
+    with pytest.raises(ServiceError, match="Не удалось сохранить данные"):
+        with transaction(conn):
+            _insert_player(conn)
+            _insert_event(conn, "camp")  # нарушение CHECK
+    assert _count(conn, "players") == 0
+
+
+def test_serialized_transactions_run_one_after_another(database_url):
+    """serialized=True: вторая транзакция ждёт, пока завершится первая."""
+    first, second = connect(database_url), connect(database_url)
+    order = []
     try:
-        assert conn.execute("SELECT COUNT(*) FROM notifications").fetchone()[0] == 3
-        with pytest.raises(sqlite3.IntegrityError):
-            conn.execute(
-                "INSERT INTO notifications (user_id, event_id, kind, text, created_at) "
-                "VALUES (2, 2, 'no_score', 'дубль', 't')"
-            )
-        # Внешние ключи работают: удаление пользователя удаляет его уведомления.
-        conn.execute("DELETE FROM users WHERE id = 1")
-        assert conn.execute("SELECT COUNT(*) FROM notifications").fetchone()[0] == 1
+        def run_second():
+            with transaction(second, serialized=True):
+                order.append("second")
+
+        with transaction(first, serialized=True):
+            worker = threading.Thread(target=run_second)
+            worker.start()
+            worker.join(timeout=1)
+            assert worker.is_alive()
+            order.append("first")
+        worker.join(timeout=10)
+        assert order == ["first", "second"]
     finally:
-        conn.close()
+        first.close()
+        second.close()
+
+
+# ---------- адрес базы (ТР-7) ----------
+
+def test_missing_database_url_gives_clear_message(monkeypatch):
+    monkeypatch.delenv("DATABASE_URL")
+    with pytest.raises(RuntimeError) as exc:
+        connect()
+    assert str(exc.value) == NO_DATABASE_URL
+
+
+def test_database_url_switches_database(conn, database_url, monkeypatch):
+    """Смена DATABASE_URL переключает базу без правки кода (AC-21)."""
+    other_name = conninfo_to_dict(database_url)["dbname"] + "_other"
+    other_url = make_conninfo(database_url, dbname=other_name)
+    with psycopg.connect(make_conninfo(database_url, dbname="postgres"), autocommit=True) as admin:
+        admin.execute(sql.SQL("DROP DATABASE IF EXISTS {} WITH (FORCE)").format(
+            sql.Identifier(other_name)))
+        admin.execute(sql.SQL("CREATE DATABASE {}").format(sql.Identifier(other_name)))
+    try:
+        auth.create_organizer(conn, "trener", "pass-org")
+        monkeypatch.setenv("DATABASE_URL", other_url)
+        other = connect()
+        try:
+            assert _count(other, "users") == 0  # новая пустая база со схемой
+            auth.create_organizer(other, "boss", "boss-pass")
+            org = auth.login(other, "boss", "boss-pass")
+            events.create_event(other, org, "training", "Т", "2030-01-01", "10:00")
+        finally:
+            other.close()
+        assert [r["login"] for r in conn.execute("SELECT login FROM users")] == ["trener"]
+        assert _count(conn, "events") == 0
+    finally:
+        with psycopg.connect(make_conninfo(database_url, dbname="postgres"),
+                             autocommit=True) as admin:
+            admin.execute(sql.SQL("DROP DATABASE IF EXISTS {} WITH (FORCE)").format(
+                sql.Identifier(other_name)))

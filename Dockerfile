@@ -1,11 +1,10 @@
-# TeamPlan в Docker (ТП-3, ТП-4).
+# Образ приложения TeamPlan (ТП-3). Запускается вместе с PostgreSQL через docker-compose.yml.
 FROM python:3.12-slim
 
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
     PIP_NO_CACHE_DIR=1 \
-    PIP_DISABLE_PIP_VERSION_CHECK=1 \
-    TEAMPLAN_DB=/data/teamplan.db
+    PIP_DISABLE_PIP_VERSION_CHECK=1
 
 WORKDIR /app
 
@@ -14,14 +13,11 @@ RUN pip install -r requirements.txt
 
 COPY . .
 
-# Папка базы принадлежит непривилегированному пользователю; именованный том
-# при первом подключении получает те же права.
-RUN useradd --create-home --uid 1000 teamplan \
-    && mkdir -p /data \
-    && chown teamplan:teamplan /data
+# Приложение работает от непривилегированного пользователя. Данные хранятся
+# в PostgreSQL (контейнер db), адрес базы задаётся переменной DATABASE_URL (ТР-7).
+RUN useradd --create-home --uid 1000 teamplan
 USER teamplan
 
-VOLUME ["/data"]
 EXPOSE 8501
 
 HEALTHCHECK --interval=30s --timeout=5s --start-period=20s --retries=3 \

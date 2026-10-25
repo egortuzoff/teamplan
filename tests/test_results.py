@@ -102,7 +102,7 @@ def test_result_can_be_edited(conn, org, p1, p2, played_game, now):
     result = results.get_result(conn, org, played_game)
     assert (result["our_score"], result["their_score"]) == (2, 2)
     assert [g["scorer_id"] for g in result["goals"]] == [p2.player_id, p2.player_id]
-    assert conn.execute("SELECT COUNT(*) FROM goals").fetchone()[0] == 2
+    assert conn.execute("SELECT COUNT(*) AS n FROM goals").fetchone()["n"] == 2
 
 
 def test_cancelled_game_gets_no_result(conn, org, p1, mk_event, now):

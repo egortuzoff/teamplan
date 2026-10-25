@@ -1,23 +1,58 @@
-"""Подключение к SQLite, схема данных и транзакции."""
+"""Подключение к PostgreSQL, схема данных и транзакции."""
 import os
-import sqlite3
 from contextlib import contextmanager
 
-from .errors import ServiceError
+import psycopg
+from psycopg.rows import dict_row
 
-PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-DEFAULT_DB_PATH = os.path.join(PROJECT_ROOT, "data", "teamplan.db")
+from .errors import ServiceError
 
 WRITE_ERROR = (
     "Не удалось сохранить данные. Ранее сохранённые данные не затронуты, "
     "повторите действие."
 )
 
-# Таблица событий описана отдельно: по этому же описанию она пересоздаётся
-# при обновлении базы старого формата (_upgrade_events).
-EVENTS_TABLE = """
-CREATE TABLE IF NOT EXISTS {name} (
-    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+NO_DATABASE_URL = (
+    "Не задана переменная окружения DATABASE_URL — адрес базы PostgreSQL, например "
+    "postgresql://teamplan:teamplan-demo@localhost:5432/teamplan. Порядок запуска — в README."
+)
+
+# Ключи рекомендательных блокировок PostgreSQL (pg_advisory_xact_lock).
+# SCHEMA_LOCK: таблицы создаёт только одно подключение, даже если несколько
+# страниц открылись одновременно на пустой базе.
+# SERIAL_LOCK: транзакции с serialized=True выполняются по очереди.
+SCHEMA_LOCK = 7301
+SERIAL_LOCK = 7302
+
+# Схема создаётся сразу в актуальном виде (ТЗ 0.9): перенос данных из SQLite
+# не выполняется (раздел 8). IF NOT EXISTS: на базе с данными при каждом
+# подключении ничего не меняется.
+SCHEMA = """
+CREATE TABLE IF NOT EXISTS players (
+    id          INTEGER GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+    name        TEXT NOT NULL,
+    number      INTEGER,
+    position    TEXT,
+    created_at  TEXT NOT NULL,
+    updated_at  TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS users (
+    id             INTEGER GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+    login          TEXT NOT NULL,
+    password_hash  TEXT NOT NULL,
+    role           TEXT NOT NULL CHECK (role IN ('organizer', 'player')),
+    player_id      INTEGER UNIQUE REFERENCES players(id) ON DELETE SET NULL,
+    created_at     TEXT NOT NULL,
+    updated_at     TEXT NOT NULL,
+    CHECK (role = 'organizer' OR player_id IS NOT NULL)
+);
+
+-- Логин уникален без учёта регистра (FR-4): Trener и trener — один логин.
+CREATE UNIQUE INDEX IF NOT EXISTS users_login ON users (lower(login));
+
+CREATE TABLE IF NOT EXISTS events (
+    id          INTEGER GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
     type        TEXT NOT NULL CHECK (type IN ('training', 'game', 'activity')),
     title       TEXT NOT NULL,
     opponent    TEXT,
@@ -31,51 +66,6 @@ CREATE TABLE IF NOT EXISTS {name} (
     created_at  TEXT NOT NULL,
     updated_at  TEXT NOT NULL
 );
-"""
-
-# Таблица уведомлений описана отдельно по той же причине: при обновлении базы
-# прежней версии она пересоздаётся с новыми видами уведомлений
-# (_upgrade_notifications). attendance, reply_overdue, no_score — уведомления
-# организатору (FR-52 – FR-54).
-NOTIFICATIONS_TABLE = """
-CREATE TABLE IF NOT EXISTS {name} (
-    id          INTEGER PRIMARY KEY AUTOINCREMENT,
-    user_id     INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-    event_id    INTEGER NOT NULL REFERENCES events(id) ON DELETE CASCADE,
-    kind        TEXT NOT NULL CHECK (kind IN (
-                    'moved', 'cancelled', 'squad_published', 'squad_changed', 'result',
-                    'attendance', 'reply_overdue', 'no_score')),
-    text        TEXT NOT NULL,
-    created_at  TEXT NOT NULL,
-    read_at     TEXT
-);
-"""
-
-# Таблицы создаются через IF NOT EXISTS: при запуске на базе прежней версии
-# недостающие таблицы (результаты, голы, уведомления) добавляются, данные
-# существующих таблиц не затрагиваются.
-SCHEMA = """
-CREATE TABLE IF NOT EXISTS players (
-    id          INTEGER PRIMARY KEY AUTOINCREMENT,
-    name        TEXT NOT NULL,
-    number      INTEGER,
-    position    TEXT,
-    created_at  TEXT NOT NULL,
-    updated_at  TEXT NOT NULL
-);
-
-CREATE TABLE IF NOT EXISTS users (
-    id             INTEGER PRIMARY KEY AUTOINCREMENT,
-    login          TEXT NOT NULL UNIQUE COLLATE NOCASE,
-    password_hash  TEXT NOT NULL,
-    role           TEXT NOT NULL CHECK (role IN ('organizer', 'player')),
-    player_id      INTEGER UNIQUE REFERENCES players(id) ON DELETE SET NULL,
-    created_at     TEXT NOT NULL,
-    updated_at     TEXT NOT NULL,
-    CHECK (role = 'organizer' OR player_id IS NOT NULL)
-);
-
-{events_table}
 
 CREATE TABLE IF NOT EXISTS attendance (
     event_id    INTEGER NOT NULL REFERENCES events(id) ON DELETE CASCADE,
@@ -107,156 +97,91 @@ CREATE TABLE IF NOT EXISTS results (
 );
 
 CREATE TABLE IF NOT EXISTS goals (
-    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    id          INTEGER GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
     event_id    INTEGER NOT NULL REFERENCES results(event_id) ON DELETE CASCADE,
     scorer_id   INTEGER NOT NULL REFERENCES players(id) ON DELETE RESTRICT,
     assist_id   INTEGER REFERENCES players(id) ON DELETE RESTRICT,
     CHECK (assist_id IS NULL OR assist_id <> scorer_id)
 );
 
-{notifications_table}
-""".replace("{events_table}", EVENTS_TABLE.format(name="events").strip()).replace(
-    "{notifications_table}", NOTIFICATIONS_TABLE.format(name="notifications").strip()
-)
+-- attendance, reply_overdue, no_score — уведомления организатору (FR-52 – FR-54).
+CREATE TABLE IF NOT EXISTS notifications (
+    id          INTEGER GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+    user_id     INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    event_id    INTEGER NOT NULL REFERENCES events(id) ON DELETE CASCADE,
+    kind        TEXT NOT NULL CHECK (kind IN (
+                    'moved', 'cancelled', 'squad_published', 'squad_changed', 'result',
+                    'attendance', 'reply_overdue', 'no_score')),
+    text        TEXT NOT NULL,
+    created_at  TEXT NOT NULL,
+    read_at     TEXT
+);
 
-# Индексы создаются после обновления таблиц: таблица уведомлений прежней
-# версии пересоздаётся (_upgrade_notifications), и её индексы удаляются вместе с ней.
-# Уникальный индекс notifications_once — защита от дубликатов уведомлений
-# «срок ответа прошёл» и «внесите счёт» (FR-53 – FR-55) на уровне базы:
-# одно такое уведомление на событие и получателя даже при одновременных
-# открытиях страниц.
-INDEXES = """
 CREATE INDEX IF NOT EXISTS notifications_user ON notifications (user_id, id);
+
+-- Защита от дубликатов уведомлений «срок ответа прошёл» и «внесите счёт»
+-- (FR-53 – FR-55) на уровне базы: одно такое уведомление на событие
+-- и получателя даже при одновременных открытиях страниц.
 CREATE UNIQUE INDEX IF NOT EXISTS notifications_once
     ON notifications (kind, event_id, user_id)
     WHERE kind IN ('reply_overdue', 'no_score');
 """
 
+# Таблицы в порядке, в котором их можно очистить (seed.py --reset, тесты).
+TABLES = (
+    "notifications", "goals", "results", "squad_players", "squads",
+    "attendance", "events", "users", "players",
+)
 
-def get_db_path():
-    """Путь к файлу базы: переменная TEAMPLAN_DB или data/teamplan.db."""
-    return os.environ.get("TEAMPLAN_DB") or DEFAULT_DB_PATH
+
+def get_database_url():
+    """Адрес базы из переменной окружения DATABASE_URL (ТР-7)."""
+    url = os.environ.get("DATABASE_URL", "").strip()
+    if not url:
+        raise RuntimeError(NO_DATABASE_URL)
+    return url
 
 
-def connect(path=None):
-    """Открывает базу и при необходимости создаёт таблицы."""
-    path = path or get_db_path()
-    if path != ":memory:":
-        folder = os.path.dirname(path)
-        if folder:
-            os.makedirs(folder, exist_ok=True)
-    # isolation_level=None: транзакциями управляем вручную (см. transaction).
-    conn = sqlite3.connect(path, isolation_level=None)
-    conn.row_factory = sqlite3.Row
-    conn.executescript(SCHEMA)
-    _upgrade_events(conn)
-    _add_opponent(conn)
-    _upgrade_notifications(conn)
-    conn.executescript(INDEXES)
-    conn.execute("PRAGMA foreign_keys = ON")
+def connect(url=None):
+    """Открывает подключение и при необходимости создаёт таблицы.
+
+    autocommit: чтение выполняется без открытой транзакции, изменения
+    группируются в транзакции явно (см. transaction). Строки возвращаются
+    словарями: row["name"].
+    """
+    conn = psycopg.connect(url or get_database_url(), autocommit=True, row_factory=dict_row)
+    try:
+        # Индекс notifications_once создаётся последним: если он есть, схема готова,
+        # и обычное открытие страницы не выполняет команд CREATE.
+        if conn.execute("SELECT to_regclass('notifications_once') AS name").fetchone()["name"]:
+            return conn
+        with conn.transaction():
+            conn.execute("SELECT pg_advisory_xact_lock(%s)", (SCHEMA_LOCK,))
+            conn.execute(SCHEMA)
+    except BaseException:
+        conn.close()
+        raise
     return conn
 
 
-def _upgrade_events(conn):
-    """Обновляет таблицу событий из формата ТЗ 0.1 без потери данных.
-
-    В старом формате тип «сбор» (camp) и нет поля «время сбора». Ограничение
-    CHECK в SQLite не изменить, поэтому таблица пересоздаётся: данные
-    копируются, события camp становятся activity (мероприятие). Вызывается
-    до включения внешних ключей, чтобы удаление старой таблицы не удалило
-    отметки явки и составы.
-    """
-    columns = {row["name"] for row in conn.execute("PRAGMA table_info(events)")}
-    if "gather_time" in columns:
-        return
-    conn.execute("BEGIN")
-    try:
-        conn.execute(EVENTS_TABLE.format(name="events_new"))
-        conn.execute(
-            "INSERT INTO events_new (id, type, title, opponent, date, time, gather_time, "
-            "place, status, reply_by, created_at, updated_at) "
-            "SELECT id, CASE type WHEN 'camp' THEN 'activity' ELSE type END, title, NULL, "
-            "date, time, NULL, place, status, reply_by, created_at, updated_at "
-            "FROM events"
-        )
-        conn.execute("DROP TABLE events")
-        conn.execute("ALTER TABLE events_new RENAME TO events")
-        if conn.execute("PRAGMA foreign_key_check").fetchone():
-            raise sqlite3.IntegrityError("foreign key check failed")
-    except BaseException:
-        conn.rollback()
-        raise
-    conn.commit()
-
-
-def _add_opponent(conn):
-    """Добавляет поле «Соперник» (ТЗ 0.6) в базу прежней версии.
-
-    Столбец без значения по умолчанию добавляется без пересоздания таблицы,
-    существующие события получают пустого соперника.
-    """
-    columns = {row["name"] for row in conn.execute("PRAGMA table_info(events)")}
-    if "opponent" not in columns:
-        conn.execute("ALTER TABLE events ADD COLUMN opponent TEXT")
-
-
-def _notifications_current(conn):
-    row = conn.execute(
-        "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'notifications'"
-    ).fetchone()
-    return "'no_score'" in row["sql"]
-
-
-def _upgrade_notifications(conn):
-    """Добавляет виды уведомлений организатору (ТЗ 0.8) в базу прежней версии.
-
-    Ограничение CHECK на вид уведомления в SQLite не изменить, поэтому
-    таблица пересоздаётся с копированием всех уведомлений, в том числе
-    отметок о прочтении. На таблицу уведомлений не ссылаются другие таблицы,
-    так что её удаление ничего не затрагивает.
-    """
-    if _notifications_current(conn):
-        return
-    # IMMEDIATE и повторная проверка: если две страницы открылись одновременно,
-    # таблицу пересоздаёт только одна из них.
-    conn.execute("BEGIN IMMEDIATE")
-    try:
-        if _notifications_current(conn):
-            conn.rollback()
-            return
-        conn.execute(NOTIFICATIONS_TABLE.format(name="notifications_new"))
-        conn.execute(
-            "INSERT INTO notifications_new (id, user_id, event_id, kind, text, created_at, read_at) "
-            "SELECT id, user_id, event_id, kind, text, created_at, read_at FROM notifications"
-        )
-        conn.execute("DROP TABLE notifications")
-        conn.execute("ALTER TABLE notifications_new RENAME TO notifications")
-    except BaseException:
-        conn.rollback()
-        raise
-    conn.commit()
+def clear(conn):
+    """Удаляет все данные и сбрасывает счётчики id (seed.py --reset, тесты)."""
+    conn.execute(f"TRUNCATE {', '.join(TABLES)} RESTART IDENTITY CASCADE")
 
 
 @contextmanager
-def transaction(conn, immediate=False):
+def transaction(conn, serialized=False):
     """Выполняет изменения одной транзакцией.
 
     При любой ошибке изменения откатываются, ранее сохранённые данные
     не затрагиваются (ТС-3). Сбой базы превращается в понятное сообщение.
-    immediate=True сразу занимает запись: одновременные транзакции
-    выполняются по очереди, а не завершаются ошибкой блокировки.
+    serialized=True: одновременные транзакции с этим признаком выполняются
+    по очереди — следующая ждёт, пока предыдущая завершится.
     """
-    conn.execute("BEGIN IMMEDIATE" if immediate else "BEGIN")
     try:
-        yield conn
-    except ServiceError:
-        conn.rollback()
-        raise
-    except sqlite3.Error as exc:
-        conn.rollback()
+        with conn.transaction():
+            if serialized:
+                conn.execute("SELECT pg_advisory_xact_lock(%s)", (SERIAL_LOCK,))
+            yield conn
+    except psycopg.Error as exc:
         raise ServiceError(WRITE_ERROR) from exc
-    except BaseException:
-        conn.rollback()
-        raise
-    else:
-        conn.commit()

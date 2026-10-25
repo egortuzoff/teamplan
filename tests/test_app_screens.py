@@ -17,10 +17,9 @@ APP = str(Path(__file__).resolve().parent.parent / "app.py")
 
 
 @pytest.fixture
-def db_path(tmp_path, monkeypatch):
-    path = str(tmp_path / "app.db")
-    monkeypatch.setenv("TEAMPLAN_DB", path)
-    return path
+def db_url(database_url):
+    """Пустая база тестов (conftest.py): приложение подключается к ней по DATABASE_URL."""
+    return database_url
 
 
 def _run_as(login, password):
@@ -47,7 +46,7 @@ def _assert_no_failure(at):
     assert not [e.value for e in at.error], [e.value for e in at.error]
 
 
-def test_empty_database_organizer(db_path):
+def test_empty_database_organizer(db_url):
     conn = connect()
     auth.create_organizer(conn, "boss", "boss-pass")
     conn.close()
@@ -60,7 +59,7 @@ def test_empty_database_organizer(db_path):
     assert {"+ Тренировка", "+ Игра", "+ Мероприятие"} <= set(labels)
 
 
-def test_empty_database_player(db_path):
+def test_empty_database_player(db_url):
     conn = connect()
     auth.create_organizer(conn, "boss", "boss-pass")
     org = auth.login(conn, "boss", "boss-pass")
@@ -74,7 +73,7 @@ def test_empty_database_player(db_path):
     assert "статистика" in text.lower()
 
 
-def test_seed_home_screens(db_path, monkeypatch):
+def test_seed_home_screens(db_url, monkeypatch):
     monkeypatch.setattr("sys.argv", ["seed.py"])
     seed.main()
     at = _run_as("igrok1", "igrok1-demo")
@@ -95,7 +94,7 @@ def test_seed_home_screens(db_path, monkeypatch):
     assert {"Опубликовать состав", "Изменить состав", "Внести счёт"} <= set(labels)
 
 
-def test_attendance_button_on_home_saves_mark(db_path, monkeypatch):
+def test_attendance_button_on_home_saves_mark(db_url, monkeypatch):
     monkeypatch.setattr("sys.argv", ["seed.py"])
     seed.main()
     at = _run_as("igrok1", "igrok1-demo")
@@ -107,7 +106,7 @@ def test_attendance_button_on_home_saves_mark(db_path, monkeypatch):
         first = auth.login(conn, "igrok1", "igrok1-demo")
         training = next(e for e in events.list_events(conn, first) if e["type"] == "training")
         row = conn.execute(
-            "SELECT status FROM attendance WHERE event_id = ? AND player_id = ?",
+            "SELECT status FROM attendance WHERE event_id = %s AND player_id = %s",
             (training["id"], first.player_id),
         ).fetchone()
     finally:
@@ -115,7 +114,7 @@ def test_attendance_button_on_home_saves_mark(db_path, monkeypatch):
     assert row["status"] == "maybe"
 
 
-def test_user_data_escaped_on_screen(db_path):
+def test_user_data_escaped_on_screen(db_url):
     conn = connect()
     auth.create_organizer(conn, "boss", "boss-pass")
     org = auth.login(conn, "boss", "boss-pass")

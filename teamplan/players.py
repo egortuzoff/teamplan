@@ -14,7 +14,7 @@ def _clean_player_fields(name, number, position):
 
 
 def _get_player(conn, player_id):
-    row = conn.execute("SELECT * FROM players WHERE id = ?", (player_id,)).fetchone()
+    row = conn.execute("SELECT * FROM players WHERE id = %s", (player_id,)).fetchone()
     if row is None:
         raise ServiceError("Игрок не найден.")
     return row
@@ -50,9 +50,9 @@ def create_player_account(conn, actor, name, login, password,
         ts = stamp(now)
         player_id = conn.execute(
             "INSERT INTO players (name, number, position, created_at, updated_at) "
-            "VALUES (?, ?, ?, ?, ?)",
+            "VALUES (%s, %s, %s, %s, %s) RETURNING id",
             (name, number, position, ts, ts),
-        ).lastrowid
+        ).fetchone()["id"]
         auth.insert_user(conn, login, password_hash, auth.ROLE_PLAYER, player_id, now)
     return player_id
 
@@ -64,8 +64,8 @@ def update_player(conn, actor, player_id, name, number=None, position=None, now=
     name, number, position = _clean_player_fields(name, number, position)
     with transaction(conn):
         conn.execute(
-            "UPDATE players SET name = ?, number = ?, position = ?, updated_at = ? "
-            "WHERE id = ?",
+            "UPDATE players SET name = %s, number = %s, position = %s, updated_at = %s "
+            "WHERE id = %s",
             (name, number, position, stamp(now), player_id),
         )
 
@@ -75,7 +75,7 @@ def set_player_password(conn, actor, player_id, new_password, now=None):
     auth.require_organizer(conn, actor)
     _get_player(conn, player_id)
     row = conn.execute(
-        "SELECT id FROM users WHERE player_id = ?", (player_id,)
+        "SELECT id FROM users WHERE player_id = %s", (player_id,)
     ).fetchone()
     if row is None:
         raise ServiceError("У игрока нет аккаунта.")
@@ -90,14 +90,14 @@ def delete_player(conn, actor, player_id):
     auth.require_organizer(conn, actor)
     _get_player(conn, player_id)
     has_goals = conn.execute(
-        "SELECT 1 FROM goals WHERE scorer_id = ? OR assist_id = ?", (player_id, player_id)
+        "SELECT 1 FROM goals WHERE scorer_id = %s OR assist_id = %s", (player_id, player_id)
     ).fetchone()
     if has_goals:
         raise ServiceError(
             "Игрока нельзя удалить: у него есть гол или передача в результатах игр."
         )
     in_squad = conn.execute(
-        "SELECT 1 FROM squad_players WHERE player_id = ?", (player_id,)
+        "SELECT 1 FROM squad_players WHERE player_id = %s", (player_id,)
     ).fetchone()
     if in_squad:
         raise ServiceError(
@@ -106,7 +106,7 @@ def delete_player(conn, actor, player_id):
         )
     with transaction(conn):
         conn.execute(
-            "DELETE FROM users WHERE player_id = ? AND role = ?",
+            "DELETE FROM users WHERE player_id = %s AND role = %s",
             (player_id, auth.ROLE_PLAYER),
         )
-        conn.execute("DELETE FROM players WHERE id = ?", (player_id,))
+        conn.execute("DELETE FROM players WHERE id = %s", (player_id,))
