@@ -98,7 +98,7 @@ GitHub Actions для pull request #14: pytest на Python 3.12 и 3.13 с Postg
 - `tests/test_startup.py` (ТР-6, РЗ-7): режим по умолчанию `demo`; неизвестный режим — ошибка, база не тронута; в `demo` создаются тестовые данные; в `production` тестовых данных нет и есть подсказка про `create_organizer.py`; при существующем организаторе подсказки нет; `seed.py` и `seed.py --reset` в `production` отказываются и данные не меняют.
 - `tests/conftest.py`: каждый тест начинает с чистым счётчиком входов и без `TEAMPLAN_MODE` из окружения.
 
-Результат: Python 3.12 — **350 passed, 0 failed** (330 прежних и 20 новых). Python 3.13 — проверяется заданием pytest в GitHub Actions для pull request.
+Результат: Python 3.12 — **350 passed, 0 failed** (330 прежних и 20 новых). Python 3.13 — **350 passed, 0 failed**.
 
 ### Проверки в Docker
 
