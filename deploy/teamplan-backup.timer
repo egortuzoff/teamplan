@@ -1,0 +1,14 @@
+# Ежедневная резервная копия TeamPlan (ТЗ, РК-1): в 04:00 по иркутскому времени.
+# Часовой пояс указан явно: системные часы сервера могут быть в UTC.
+# Persistent=true: если в 04:00 машина была выключена, копия создаётся сразу
+# после включения.
+[Unit]
+Description=TeamPlan: ежедневная резервная копия базы
+
+[Timer]
+OnCalendar=*-*-* 04:00:00 Asia/Irkutsk
+Persistent=true
+Unit=teamplan-backup.service
+
+[Install]
+WantedBy=timers.target

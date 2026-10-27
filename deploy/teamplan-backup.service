@@ -1,0 +1,19 @@
+# Резервная копия базы TeamPlan в Object Storage (ТЗ, РК-1, РК-2).
+# Запускается таймером teamplan-backup.timer; вручную: sudo systemctl start teamplan-backup
+# Журнал: journalctl -u teamplan-backup
+# Установка — README, раздел «Резервное копирование и восстановление».
+# Пути и пользователь — как на сервере: пользователь teamplan, проект в /home/teamplan/teamplan.
+[Unit]
+Description=TeamPlan: резервная копия базы в Object Storage
+Wants=network-online.target
+After=network-online.target docker.service
+Requires=docker.service
+
+[Service]
+Type=oneshot
+User=teamplan
+WorkingDirectory=/home/teamplan/teamplan
+ExecStart=/usr/bin/python3 /home/teamplan/teamplan/deploy/backup.py create
+# Сразу видеть сообщения в журнале, без буферизации.
+Environment=PYTHONUNBUFFERED=1
+TimeoutStartSec=30min
