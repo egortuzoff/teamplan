@@ -4,6 +4,8 @@
 .dockerignore
 Dockerfile
 docker-compose.yml
+docker-compose.prod.yml
+Caddyfile
 .venv/
 venv/
 __pycache__/

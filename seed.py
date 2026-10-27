@@ -4,6 +4,8 @@
 Заново:   python seed.py --reset   (удаляет все данные из базы и создаёт тестовые с нуля)
 
 База задаётся переменной окружения DATABASE_URL (см. README).
+Только для демонстрационного режима: при TEAMPLAN_MODE=production скрипт отказывается
+работать (РЗ-7).
 
 Все имена, логины и пароли вымышленные. Даты событий считаются от сегодняшнего дня.
 Сыгранная игра со счётом 2:1 и игра без счёта создаются в прошлом: такое возможно
@@ -16,6 +18,7 @@ from datetime import datetime, time, timedelta
 from teamplan import attendance, auth, events, players, results, squads
 from teamplan.db import clear, connect
 from teamplan.errors import ServiceError
+from teamplan.settings import MODE_PRODUCTION, get_mode
 
 ORGANIZER = {"login": "trener", "password": "trener-demo-1"}
 PLAYERS = [
@@ -118,10 +121,23 @@ def top_up(conn):
     return [title for title, _ in missing]
 
 
-def main():
+def main(argv=None):
     parser = argparse.ArgumentParser(description="Тестовые данные TeamPlan")
     parser.add_argument("--reset", action="store_true", help="удалить все данные из базы и создать тестовые заново")
-    args = parser.parse_args()
+    args = parser.parse_args(argv)
+
+    # РЗ-7: в рабочем режиме тестовые данные не загружаются, в том числе вручную.
+    try:
+        mode = get_mode()
+    except RuntimeError as exc:
+        print(exc)
+        return 1
+    if mode == MODE_PRODUCTION:
+        print(
+            "Рабочий режим (TEAMPLAN_MODE=production): тестовые данные не создаются. "
+            "Организатор создаётся командой python create_organizer.py."
+        )
+        return 1
 
     try:
         conn = connect()

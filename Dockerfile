@@ -23,5 +23,7 @@ EXPOSE 8501
 HEALTHCHECK --interval=30s --timeout=5s --start-period=20s --retries=3 \
     CMD python -c "import urllib.request; urllib.request.urlopen('http://localhost:8501/_stcore/health', timeout=4)"
 
-# seed.py создаёт тестовые данные только в пустой базе, существующие не трогает.
-CMD ["sh", "-c", "python seed.py && exec streamlit run app.py --server.address=0.0.0.0 --server.port=8501 --server.headless=true"]
+# startup.py готовит базу по режиму TEAMPLAN_MODE (ТР-6): в демонстрационном режиме
+# seed.py создаёт тестовые данные только в пустой базе, существующие не трогает;
+# в рабочем режиме тестовые данные не создаются (РЗ-7).
+CMD ["sh", "-c", "python startup.py && exec streamlit run app.py --server.address=0.0.0.0 --server.port=8501 --server.headless=true"]

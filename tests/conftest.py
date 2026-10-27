@@ -64,12 +64,22 @@ def test_database_url():
 def database_url(test_database_url, monkeypatch):
     """Пустая база для каждого теста; DATABASE_URL приложения указывает на неё."""
     monkeypatch.setenv("DATABASE_URL", test_database_url)
+    # Тесты по умолчанию в демонстрационном режиме, даже если TEAMPLAN_MODE задан в терминале.
+    monkeypatch.delenv("TEAMPLAN_MODE", raising=False)
     connection = connect(test_database_url)
     try:
         clear(connection)
     finally:
         connection.close()
     return test_database_url
+
+
+@pytest.fixture(autouse=True)
+def fresh_login_throttle():
+    """Счётчик неверных входов (ТБ-8) общий для процесса: каждый тест начинает с чистого."""
+    auth.login_throttle.reset()
+    yield
+    auth.login_throttle.reset()
 
 
 @pytest.fixture

@@ -1,0 +1,44 @@
+# Рабочий режим на сервере (РЗ-1 – РЗ-3, РЗ-7, ТБ-7): дополнение к docker-compose.yml.
+# Запуск:    docker compose -f docker-compose.yml -f docker-compose.prod.yml up -d --build
+# Остановка: docker compose -f docker-compose.yml -f docker-compose.prod.yml down
+#
+# Настройки — в файле .env рядом (образец .env.example): TEAMPLAN_DOMAIN, POSTGRES_PASSWORD.
+services:
+  teamplan:
+    environment:
+      # РЗ-7: тестовые данные не создаются, организатор — create_organizer.py.
+      TEAMPLAN_MODE: production
+    # Порт 8501 остаётся только на 127.0.0.1 (docker-compose.yml, РЗ-3):
+    # из интернета приложение доступно только через Caddy.
+
+  db:
+    environment:
+      # В рабочем режиме пароль базы обязателен: без него запуск останавливается,
+      # пароль демонстрационного режима не используется.
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Задайте POSTGRES_PASSWORD в .env (openssl rand -hex 24)}
+    # Порт 5432 остаётся только на 127.0.0.1 (docker-compose.yml, РЗ-3).
+
+  caddy:
+    # Официальный образ, версия зафиксирована.
+    image: caddy:2.10.2-alpine
+    depends_on:
+      - teamplan
+    ports:
+      # РЗ-3: из интернета открыты только 80 и 443 (и 22 для SSH на самой машине).
+      # 80 нужен для получения сертификата и перенаправления на HTTPS.
+      - "80:80"
+      - "443:443"
+      - "443:443/udp"
+    environment:
+      TEAMPLAN_DOMAIN: ${TEAMPLAN_DOMAIN:?Задайте TEAMPLAN_DOMAIN в .env, например teamplan-irk.duckdns.org}
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      # Сертификаты и ключи Let's Encrypt хранятся в томе и переживают пересоздание
+      # контейнеров: повторно сертификат не запрашивается.
+      - caddy-data:/data
+      - caddy-config:/config
+    restart: unless-stopped
+
+volumes:
+  caddy-data:
+  caddy-config:
