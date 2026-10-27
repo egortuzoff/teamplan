@@ -65,6 +65,28 @@ jobs:
       - name: Запустить тесты
         run: python -m pytest -v
 
+  prod-config:
+    name: Настройки рабочего режима (docker-compose.prod.yml)
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Получить код
+        uses: actions/checkout@v4
+
+      # Тестовые значения: настоящие домен и пароль есть только в .env на сервере.
+      - name: Проверить docker-compose.yml вместе с docker-compose.prod.yml
+        env:
+          TEAMPLAN_DOMAIN: teamplan.example.org
+          POSTGRES_PASSWORD: ci-not-a-real-password
+        run: docker compose -f docker-compose.yml -f docker-compose.prod.yml config --quiet
+
+      - name: Проверить Caddyfile
+        env:
+          TEAMPLAN_DOMAIN: teamplan.example.org
+        run: |
+          image=$(grep -oE 'caddy:[0-9][^ ]*' docker-compose.prod.yml)
+          docker run --rm -e TEAMPLAN_DOMAIN -v "$PWD/Caddyfile:/etc/caddy/Caddyfile:ro"             "$image" caddy validate --config /etc/caddy/Caddyfile --adapter caddyfile
+
   docker:
     name: Docker (приложение и PostgreSQL)
     runs-on: ubuntu-latest

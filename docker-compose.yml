@@ -42,6 +42,10 @@ services:
       # Часовой пояс команды: от него зависят проверки «событие началось»
       # и «срок в прошлом». По умолчанию Москва, можно задать переменной TZ.
       TZ: ${TZ:-Europe/Moscow}
+      # ТР-6: режим работы. demo — тестовые данные при первом запуске (по умолчанию),
+      # production — без тестовых данных (РЗ-7); на сервере задаётся
+      # в docker-compose.prod.yml.
+      TEAMPLAN_MODE: ${TEAMPLAN_MODE:-demo}
     restart: unless-stopped
 
 volumes:

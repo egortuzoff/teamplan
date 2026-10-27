@@ -1,0 +1,18 @@
+# Обратный прокси рабочего режима (РЗ-1, РЗ-2, ТБ-7), используется в docker-compose.prod.yml.
+# Домен — из переменной TEAMPLAN_DOMAIN. Caddy сам получает и продлевает сертификат
+# Let's Encrypt и перенаправляет запросы по HTTP на HTTPS.
+{$TEAMPLAN_DOMAIN} {
+	encode zstd gzip
+
+	header {
+		# Браузер обращается к сайту только по HTTPS (ТБ-7).
+		Strict-Transport-Security "max-age=31536000"
+		X-Content-Type-Options "nosniff"
+		Referrer-Policy "same-origin"
+		-Server
+	}
+
+	# Streamlit работает через WebSocket (/_stcore/stream): Caddy проксирует его
+	# без дополнительных настроек.
+	reverse_proxy teamplan:8501
+}
