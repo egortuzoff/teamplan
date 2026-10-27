@@ -223,20 +223,59 @@ docker run --rm --network teamplan_default -v "${PWD}:/src" -w /src -e TZ=Europe
 
 **Что нужно.**
 
-- Виртуальная машина с Ubuntu 24.04 LTS, на ней Docker Engine и плагин Docker Compose (установка — по инструкции docs.docker.com для Ubuntu) и git.
+- Виртуальная машина с Ubuntu 24.04 LTS (достаточно 2 ГБ памяти и 20 ГБ диска), пользователь с правами `sudo`, вход по SSH по ключу.
 - Доменное имя, которое указывает на публичный адрес машины (в DuckDNS — запись `teamplan-irk` с этим адресом).
 - Из интернета открыты только порты 22 (SSH), 80 и 443 (РЗ-3) — в группе безопасности Яндекс Облака. Порт 80 нужен Let's Encrypt для выдачи сертификата и для перенаправления на HTTPS. Порты приложения (8501) и базы (5432) опубликованы только на `127.0.0.1` и снаружи недоступны. Вход по SSH — только по ключу.
 
-**Настройка.** Получите код и создайте файл настроек из образца:
+**Подготовка машины.** Один раз, по SSH на сервере.
+
+Обновите пакеты (без вопросов во время установки; переход на новую версию Ubuntu, `do-release-upgrade`, не нужен):
+
+```bash
+sudo apt update
+sudo DEBIAN_FRONTEND=noninteractive apt -y -o Dpkg::Options::=--force-confdef -o Dpkg::Options::=--force-confold upgrade
+```
+
+Установите Docker Engine и плагин Compose из официального репозитория Docker (как в инструкции docs.docker.com для Ubuntu) и разрешите своему пользователю запускать Docker без `sudo`:
+
+```bash
+sudo apt install -y ca-certificates curl git
+sudo install -m 0755 -d /etc/apt/keyrings
+sudo curl -fsSL https://download.docker.com/linux/ubuntu/gpg -o /etc/apt/keyrings/docker.asc
+sudo chmod a+r /etc/apt/keyrings/docker.asc
+echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.asc] https://download.docker.com/linux/ubuntu $(. /etc/os-release && echo "$VERSION_CODENAME") stable" | sudo tee /etc/apt/sources.list.d/docker.list
+sudo apt update
+sudo apt install -y docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin
+sudo usermod -aG docker $USER
+```
+
+Группа `docker` начинает действовать после повторного входа по SSH. Служба Docker включается в автозапуск при установке, а у контейнеров задано `restart: unless-stopped`, поэтому после перезагрузки машины сайт запускается сам.
+
+При 2 ГБ памяти добавьте файл подкачки на 2 ГБ, чтобы сборке образа и PostgreSQL хватало памяти (запись в `/etc/fstab` сохраняет его после перезагрузки):
+
+```bash
+sudo fallocate -l 2G /swapfile
+sudo chmod 600 /swapfile
+sudo mkswap /swapfile
+sudo swapon /swapfile
+echo "/swapfile none swap sw 0 0" | sudo tee -a /etc/fstab
+```
+
+Проверьте, что вход по SSH с паролем отключён: `sudo sshd -T | grep -i passwordauthentication` должна показать `passwordauthentication no`. В образах Ubuntu Яндекс Облака так и есть; если нет — задайте `PasswordAuthentication no` в `/etc/ssh/sshd_config` и выполните `sudo systemctl restart ssh`, не закрывая текущий сеанс, пока не проверите вход по ключу в новом окне.
+
+Автоматические обновления безопасности в Ubuntu 24.04 включены по умолчанию: `systemctl is-active unattended-upgrades` показывает `active`, а `cat /etc/apt/apt.conf.d/20auto-upgrades` — две строки со значением `"1"`.
+
+**Настройка.** Получите код и создайте файл настроек из образца. Случайный пароль базы записывается сразу в `.env` и на экран не выводится:
 
 ```bash
 git clone https://github.com/egortuzoff/teamplan.git
 cd teamplan
-cp .env.example .env
-openssl rand -hex 24
+(umask 077 && PW=$(openssl rand -hex 24) awk 'BEGIN{p=ENVIRON["PW"]} /^POSTGRES_PASSWORD=/{print "POSTGRES_PASSWORD=" p; next} {print}' .env.example > .env)
+chmod 600 .env
+grep -c '^POSTGRES_PASSWORD=[0-9a-f]\{48\}$' .env
 ```
 
-В `.env` впишите в `POSTGRES_PASSWORD` случайный пароль, который вывела последняя команда, и проверьте `TEAMPLAN_DOMAIN=teamplan-irk.duckdns.org`. Файл `.env` в репозиторий не попадает (`.gitignore`); ограничьте доступ к нему: `chmod 600 .env`. Без `POSTGRES_PASSWORD` и `TEAMPLAN_DOMAIN` рабочий режим не запустится — пароль демонстрационного режима здесь не используется. Пароль базы применяется при первом создании тома; позже он меняется только вместе с паролем в самой базе (`ALTER USER`).
+Последняя команда должна вывести `1` — пароль записан. Проверьте `TEAMPLAN_DOMAIN=teamplan-irk.duckdns.org` (`grep TEAMPLAN_DOMAIN .env`). Файл `.env` в репозиторий не попадает (`.gitignore`), доступ к нему — только у владельца (`600`). Без `POSTGRES_PASSWORD` и `TEAMPLAN_DOMAIN` рабочий режим не запустится — пароль демонстрационного режима здесь не используется. Пароль базы применяется при первом создании тома; позже он меняется только вместе с паролем в самой базе (`ALTER USER`).
 
 **Запуск.**
 
@@ -244,10 +283,18 @@ openssl rand -hex 24
 docker compose -f docker-compose.yml -f docker-compose.prod.yml up -d --build
 ```
 
-**Создание организатора.** После первого запуска в базе нет ни одного аккаунта, об этом есть подсказка в журнале (`docker compose logs teamplan`). Создайте организатора — логин и пароль вводятся в терминале, пароль не отображается:
+Первый запуск собирает образ приложения, это занимает несколько минут. Затем Caddy получает сертификат, обычно за 10–30 секунд: в журнале `docker compose -f docker-compose.yml -f docker-compose.prod.yml logs caddy` появляется `certificate obtained successfully`.
+
+**Создание организатора.** После первого запуска в базе нет ни одного аккаунта, об этом есть подсказка в журнале (`docker compose -f docker-compose.yml -f docker-compose.prod.yml logs teamplan`). Создайте организатора — логин и пароль вводятся в терминале, пароль не отображается:
 
 ```bash
-docker compose exec teamplan python create_organizer.py
+docker compose -f docker-compose.yml -f docker-compose.prod.yml exec teamplan python create_organizer.py
+```
+
+С компьютера Windows то же одной командой из PowerShell (`-t` нужен, чтобы пароль вводился скрыто):
+
+```powershell
+ssh -t teamplan@213.130.80.110 "cd ~/teamplan && docker compose -f docker-compose.yml -f docker-compose.prod.yml exec teamplan python create_organizer.py"
 ```
 
 Игроков организатор заводит в приложении, в разделе «Игроки».
@@ -256,7 +303,9 @@ docker compose exec teamplan python create_organizer.py
 
 - `docker compose -f docker-compose.yml -f docker-compose.prod.yml ps` — контейнеры `db`, `teamplan`, `caddy` запущены, `db` и `teamplan` — `healthy`.
 - `curl -I http://teamplan-irk.duckdns.org` — ответ `308` с переходом на `https://`.
-- `curl -I https://teamplan-irk.duckdns.org` — ответ `200`, без ошибок сертификата.
+- `curl -I https://teamplan-irk.duckdns.org` — ответ `200`, без ошибок сертификата; `https://teamplan-irk.duckdns.org/_stcore/health` отвечает `ok`.
+- Порты приложения и базы только на `127.0.0.1`: на сервере `sudo ss -ltn | grep -E ':(8501|5432) '` показывает `127.0.0.1:8501` и `127.0.0.1:5432`. Проверка снаружи (`Test-NetConnection 213.130.80.110 -Port 8501`) достоверна, только если тот же способ показывает `False` для заведомо закрытого порта, например 12345: VPN или антивирус на компьютере могут принимать соединения на любой порт сами, и тогда `TcpTestSucceeded` всегда `True`.
+- `ssh -o PubkeyAuthentication=no -o PreferredAuthentications=password teamplan@213.130.80.110` — `Permission denied (publickey)`: пароль даже не запрашивается.
 - Откройте https://teamplan-irk.duckdns.org в браузере компьютера и телефона и войдите как организатор.
 - Если сертификат не получен, смотрите журнал прокси: `docker compose -f docker-compose.yml -f docker-compose.prod.yml logs caddy` (обычно домен не указывает на машину или закрыт порт 80).
 
